@@ -46,6 +46,7 @@ class ClaudeClient:
         self.cwd = os.getcwd()
         self.nvim_pane = os.environ.get("CLAUDE_NVIM_PANE", "")
         self.tmux_srv = os.environ.get("CLAUDE_TMUX_SRV", "")
+        self.editor_bin = os.environ.get("CLAUDE_EDITOR_BIN", "")
         self.proc = None
         self._streaming_text = False  # True enquanto typewriter está ativo
 

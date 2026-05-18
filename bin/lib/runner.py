@@ -412,7 +412,7 @@ def run_turn(client, message, images=None):
             for block in event.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
                     _show_status()
-                    log_tool_call(block, client.nvim_pane, client.tmux_srv)
+                    log_tool_call(block, client.nvim_pane, client.tmux_srv, client.editor_bin)
                     _tool_names[block.get("id", "")] = block.get("name", "?")
 
         elif etype == "user":

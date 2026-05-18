@@ -48,7 +48,7 @@ def _find_edit_line(file_path, old_string):
         return None
 
 
-def log_tool_call(block, nvim_pane="", tmux_srv=""):
+def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     _clear_tools_pane()
     name = block.get("name", "")
     inp  = block.get("input", {})
@@ -66,7 +66,8 @@ def log_tool_call(block, nvim_pane="", tmux_srv=""):
     elif name in ("Edit", "Write"):
         fp = inp.get("file_path", "")
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {fp}\n")
-        if nvim_pane and fp:
+        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
+        if nvim_pane and fp and _is_vim:
             srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
             line = _find_edit_line(fp, inp.get("old_string", ""))
             loc  = f"+{line} " if line else ""
