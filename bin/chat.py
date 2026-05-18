@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""
+Claude multi-pane terminal client.
+Consome stream-json e roteia eventos para panes tmux via arquivos de log.
+"""
+
+import os
+import re
+import subprocess
+import sys
+import time
+import random
+from enum import Enum
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from lib.theme import (
+    DIM, RESET, YELLOW, WHITE,
+    CHAT_FG, TOOLS_BASH,
+    HEADER_TITLE, HEADER_STONE, HEADER_DARK, HEADER_ROSE,
+    _QUOTES,
+)
+from lib.session import pick_session
+from lib.input import InputReader
+from lib.runner import run_turn
+
+RUNDIR       = Path("/tmp/claude-client")
+THINKING_LOG = RUNDIR / "thinking"
+TOOLS_LOG    = RUNDIR / "tools"
+
+
+class Mode(Enum):
+    NORMAL = "normal"
+    AUTO   = "auto"
+
+MODES = [Mode.NORMAL, Mode.AUTO]
+
+
+class ClaudeClient:
+    def __init__(self, resume_id=None):
+        self.resume_id = resume_id        # None = nova sessão, "" = --continue, "<id>" = --resume <id>
+        self.session_id = None            # preenchido após o primeiro turno via evento result
+        self.first_turn = True
+        self.mode = Mode.NORMAL
+        self.cwd = os.getcwd()
+        self.nvim_pane = os.environ.get("CLAUDE_NVIM_PANE", "")
+        self.tmux_srv = os.environ.get("CLAUDE_TMUX_SRV", "")
+        self.proc = None
+        self._streaming_text = False  # True enquanto typewriter está ativo
+
+        RUNDIR.mkdir(exist_ok=True)
+        THINKING_LOG.write_text("")
+        TOOLS_LOG.write_text("")
+
+        self._mode_ref = [self.mode]
+        self._input_reader = InputReader(self._mode_ref)
+
+    def _sync_mode(self):
+        """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
+        self.mode = self._mode_ref[0]
+
+    def _prompt(self):
+        if self.mode == Mode.AUTO:
+            badge = f"{TOOLS_BASH}auto{RESET}"
+        else:
+            badge = f"{DIM}normal{RESET}"
+        return f"{badge} {WHITE}>_{RESET} "
+
+    def _print_header(self):
+        R = RESET
+        _strip = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]')
+        art = [
+            f"{HEADER_STONE}   ,             ,{R}",
+            f"{HEADER_STONE}   :===.     .===:{R}",
+            f"{HEADER_STONE}   |/V\\|     |/V\\|{R}",
+            f"{HEADER_STONE}   ||||;  |  |||||{R}",
+            f"{HEADER_STONE}   |||||__{HEADER_DARK}T{HEADER_STONE}__|||||{R}",
+            f"{HEADER_STONE}   |;:;|.,.,.|;:;|{R}",
+            f"{HEADER_STONE}   |/V\\|({HEADER_ROSE}{{o}}{HEADER_STONE})|/V\\|{R}",
+            f"{HEADER_STONE}   ||||| `=' |||||{R}",
+            f"{HEADER_STONE}   |;:;|:;;;:|:::|{R}",
+            f'{HEADER_STONE}   |,".|,:::.|,".|{R}',
+            f"{HEADER_STONE}   ||:|||:::|||:||{R}",
+            f"{HEADER_DARK}---''\"'-'\"\"\"'-'\"''---{R}",
+        ]
+        quote = random.choice(_QUOTES)
+        labels = [
+            f"  {HEADER_TITLE}Claude Frollo Observer{R}",
+            f"  {DIM}Notre-Dame de Paris · 1482{R}",
+            "",
+            f"  {DIM}Shift+Tab: alterna modo  Ctrl+C: sair{R}",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            f"  {DIM}{quote}{R}",
+        ]
+        label_width = 44
+        sys.stdout.write("\n")
+        for l, a in zip(labels, art):
+            visible = len(_strip.sub("", l))
+            pad = " " * max(0, label_width - visible)
+            sys.stdout.write(l + pad + a + "\n")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _paste(self):
+        paste_path = RUNDIR / "paste.txt"
+        paste_path.write_text("")
+        editor = os.environ.get("EDITOR", "nvim")
+        subprocess.call([editor, str(paste_path)])
+        content = paste_path.read_text().strip()
+        if not content:
+            sys.stdout.write(f"\n{DIM}paste vazio, ignorado{RESET}\n")
+            sys.stdout.flush()
+            return None
+        lines = content.splitlines()
+        preview = lines[0][:60] + ("…" if len(lines[0]) > 60 else "")
+        suffix = f" {DIM}+{len(lines)-1} linhas{RESET}" if len(lines) > 1 else ""
+        sys.stdout.write(f"\n{DIM}paste: {RESET}{preview}{suffix}\n")
+        sys.stdout.flush()
+        return content
+
+    def _take_snapshot(self):
+        """Captura estado do último turno: resposta do agente + tools + thinking."""
+        _ansi = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]')
+        out_path = RUNDIR / "snapshot.txt"
+        sections = []
+
+        last_response = getattr(self, '_last_response_text', '').strip()
+        if last_response:
+            sections.append("=== última resposta ===\n" + last_response)
+
+        for label, path in [("tools", TOOLS_LOG), ("thinking", THINKING_LOG)]:
+            if path.exists():
+                raw = _ansi.sub("", path.read_text()).strip()
+                if raw:
+                    sections.append(f"=== {label} ===\n" + raw[-3000:])
+
+        content = "\n\n".join(sections) + "\n"
+        out_path.write_text(content)
+        return content
+
+    def chat(self):
+        self._print_header()
+        if self.resume_id is not None:
+            if self.resume_id:
+                sys.stdout.write(f"{CHAT_FG}retomando sessão {self.resume_id[:8]}…{RESET}\n\n")
+            else:
+                sys.stdout.write(f"{CHAT_FG}retomando conversa anterior{RESET}\n\n")
+            sys.stdout.flush()
+
+        while True:
+            try:
+                self._sync_mode()
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                _snapshot_buf = [None]
+                def _pre_clear(text):
+                    if text.strip() == '/snapshot':
+                        _snapshot_buf[0] = self._take_snapshot()
+                user_input = self._input_reader.read_input(MODES, pre_clear_hook=_pre_clear)
+                pending_image = self._input_reader.pending_image
+                self._input_reader.pending_image = None
+                self._sync_mode()
+                if not user_input.strip():
+                    continue
+                if user_input.strip() == "/snapshot":
+                    snapshot = _snapshot_buf[0] or ""
+                    sys.stdout.write(f"\n{DIM}snapshot capturado — enviando ao agente…{RESET}\n\n")
+                    sys.stdout.flush()
+                    run_turn(self, f"[snapshot do estado atual do terminal]\n\n{snapshot}")
+                    continue
+                if user_input.strip() == "/paste":
+                    content = self._paste()
+                    if content:
+                        sys.stdout.write('\n')
+                        sys.stdout.flush()
+                        run_turn(self, content)
+                    continue
+                if user_input.strip() == "/new":
+                    sys.stdout.write(f"{DIM}novo contexto…{RESET}\n")
+                    sys.stdout.flush()
+                    argv = sys.argv[:]
+                    if "--resume" in argv:
+                        i = argv.index("--resume")
+                        argv = argv[:i] + argv[i+2:]
+                    os.execvp(argv[0], argv)
+                if user_input.strip() == "/refresh":
+                    if not self.session_id:
+                        sys.stdout.write(f"{YELLOW}sem sessão ativa ainda{RESET}\n\n")
+                        sys.stdout.flush()
+                        continue
+                    sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
+                    sys.stdout.flush()
+                    os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                images = [pending_image] if pending_image else None
+                retry_msg = user_input
+                retry_imgs = images
+                while run_turn(self, retry_msg, images=retry_imgs):
+                    retry_msg = "(permissão concedida — continue a tarefa anterior)"
+                    retry_imgs = None
+            except KeyboardInterrupt:
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc.wait()
+                # durante typewriter: preserva a linha e desce; durante spinner: limpa a linha
+                if self._streaming_text:
+                    sys.stdout.write(f"\n{DIM}cancelado{RESET}\n")
+                else:
+                    sys.stdout.write(f"\r\033[2K{DIM}cancelado{RESET}\n")
+                self._streaming_text = False
+                sys.stdout.flush()
+                continue
+            except EOFError:
+                print(f"\n{DIM}saindo...{RESET}")
+                break
+            except Exception as e:
+                import traceback
+                err = traceback.format_exc()
+                with open("/tmp/claude-client-err.log", "a") as f:
+                    f.write(err)
+                print(f"\n{YELLOW}erro inesperado (ver /tmp/claude-client-err.log):{RESET} {e}\n")
+                continue
+
+
+if __name__ == "__main__":
+    import argparse
+    import traceback
+
+    try:
+        p = argparse.ArgumentParser(description="Claude multi-pane client")
+        p.add_argument("--resume", "-r", nargs="?", const="", metavar="SESSION_ID",
+                       help="retoma conversa: sem ID abre picker, com ID retoma direto")
+        args = p.parse_args()
+
+        resume_id = None
+        if args.resume is not None:
+            if args.resume:
+                resume_id = args.resume
+            else:
+                resume_id = pick_session(os.getcwd()) or ""
+
+        ClaudeClient(resume_id=resume_id).chat()
+    except (KeyboardInterrupt, EOFError):
+        pass
+    except BaseException as e:
+        err = traceback.format_exc()
+        with open("/tmp/claude-client-err.log", "w") as f:
+            f.write(err)
+        sys.stderr.write(f"\n\nERRO FATAL: {e}\n{err}\n")
+        sys.stderr.write("\nPressione Enter para fechar...\n")
+        sys.stderr.flush()
+        try:
+            input()
+        except Exception:
+            time.sleep(30)

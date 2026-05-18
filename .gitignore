@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs / runtime
+*.jsonl
+*.log
+*.bak
+/tmp/
+
+# Aider
+.aider*
+
+# Editor
+*.swp
+*.swo
+*~
+.nvim.lua
+.vim/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code personal overrides (project settings are checked in)
+.claude/settings.local.json
