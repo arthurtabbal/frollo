@@ -1,7 +1,6 @@
 import contextlib
 import json
 import os
-import random
 import re
 import select
 import subprocess
@@ -254,8 +253,6 @@ def run_turn(client, message, images=None):
     thinking_lines  = [_idle_lines]   # tamanho atual do pane (rastreado localmente)
     thinking_count  = [0]             # newlines acumulados no bloco thinking
     spinner_shown = [False]
-    in_thinking   = [False]
-    gargoyle_next = [0.0]
     rate_limited = [False]
     rate_limit_ts = [0.0]
     rate_limit_retry = [0]
@@ -303,31 +300,10 @@ def run_turn(client, message, images=None):
         spinner_shown[0] = False
         sys.stdout.flush()
 
-    def _fire_gargoyle_if_ready():
-        if not in_thinking[0]:
-            return
-        now = time.time()
-        if gargoyle_next[0] == 0.0:
-            gargoyle_next[0] = now + random.uniform(8, 20)
-            return
-        if now < gargoyle_next[0]:
-            return
-        gargoyle_next[0] = now + random.uniform(8, 20)
-        prefix, fala = _gargula_comment("thinking")
-        if not prefix:
-            return
-        sys.stdout.write("\r\033[2K")
-        sys.stdout.flush()
-        _col[0] = 0
-        _typewrite(prefix + fala.rstrip('\n'), delay=0.025, wrap=False)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
     while True:
         ready, _, _ = select.select([proc.stdout], [], [], 0.15)
         if not ready:
             _show_status()
-            _fire_gargoyle_if_ready()
             continue
         raw = proc.stdout.readline()
         if not raw:
@@ -382,8 +358,6 @@ def run_turn(client, message, images=None):
                 block = e.get("content_block", {})
                 current_block = block.get("type")
                 if current_block == "thinking":
-                    in_thinking[0] = True
-                    gargoyle_next[0] = 0.0
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
                 elif current_block == "text":
                     _clear_status()
@@ -426,7 +400,6 @@ def run_turn(client, message, images=None):
 
             elif et == "content_block_stop":
                 if current_block == "thinking":
-                    in_thinking[0] = False
                     _log(THINKING_LOG, f"{RESET}\n")
                 elif current_block == "text":
                     client._streaming_text = False
