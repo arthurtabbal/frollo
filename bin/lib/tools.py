@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_READ, TOOLS_AGENT_IC, CLEAR
+from .theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, CLEAR
 from .gargulas import _gargula_comment
 from .typewriter import log_animated
 
@@ -72,6 +72,17 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
             line = _find_edit_line(fp, inp.get("old_string", ""))
             loc  = f"+{line} " if line else ""
             os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
+
+    elif name == "Grep":
+        pattern = inp.get("pattern", "")
+        path    = inp.get("path", "")
+        display = pattern + (f"  {DIM}{path}{RESET}" if path else "")
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}⊕{RESET}  {display}\n")
+
+    elif name in ("WebFetch", "WebSearch"):
+        query = inp.get("url", inp.get("query", name))
+        display = query[:90] if len(query) > 90 else query
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_WEB}↓{RESET}  {display}\n")
 
     elif name == "Agent":
         desc = inp.get("description", name)

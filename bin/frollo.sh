@@ -50,14 +50,17 @@ tmux -L "$SRV" split-window -v -l "26%" -t "$P_CHAT" \
 P_TOOLS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 tmux -L "$SRV" display-message -t "$P_TOOLS" -p "#{pane_tty}" > "$RUNDIR/tools_tty"
 
-# Stats: 11% do restante após tools (~8% do total), entre chat e tools
-tmux -L "$SRV" split-window -v -l "11%" -t "$P_CHAT" \
+# Stats: exatamente 2 linhas, entre chat e tools
+tmux -L "$SRV" split-window -v -l 2 -t "$P_CHAT" \
     "stty -echo; tail -n 0 -f /dev/null"
 P_STATS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 tmux -L "$SRV" display-message -t "$P_STATS" -p "#{pane_tty}" > "$RUNDIR/stats_tty"
 
-# Thinking: 42% acima do chat (-b = before = above)
-tmux -L "$SRV" split-window -v -b -l "42%" -t "$P_CHAT" \
+# Thinking: tamanho idle desde o início (mesmo cálculo do runner.py)
+ROWS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{window_height}" 2>/dev/null || tput lines)
+IDLE_THINK=$(( ROWS * 16 / 100 ))
+[ "$IDLE_THINK" -lt 8 ] && IDLE_THINK=8
+tmux -L "$SRV" split-window -v -b -l "$IDLE_THINK" -t "$P_CHAT" \
     "stty -echo; tail -n 0 -f $RUNDIR/thinking 2>/dev/null"
 P_THINKING=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 tmux -L "$SRV" display-message -t "$P_THINKING" -p "#{pane_tty}" > "$RUNDIR/thinking_tty"
@@ -118,23 +121,15 @@ _sky() {
         line="${line//__MOON3__/${_AM}${_q}-´${R}}"
         printf '%s\n' "$line"
     done <<'SKYEOF'
-      + *           '   '    o   +       .           +       _|_
-   |           '  +~~*        .:'                             |    *.   '
- - o -         .  '       _.::'       +     +       '                     '    +
-   |  ++    .            (_.'                                            '
+  o          .  '                  +     +       '                     '    +
+      ++    .              . '                                           '
              .                                             o        o .-.
-o         '   '        +                       .    |      '           ) )
-     .        +                      .            - o -             ' '-´    .
-                            .                       |     .               ++.
-    . '          .    .  *    /           +
-  +                          /              . .  .*
+o         '   '        +                       .           '           ) )
+     .        +                      .              o               ' '-´    .
                             *  +       +' o            * .                .
- .                  .' *.            '                            .        .
-  .            '                          *                     +      .
-     o      o               +                             .   .           '
 SKYEOF
 }
-_sky > "$THINKING_TTY" 2>/dev/null || true
+{ printf '\033[H'; printf '%s' "$(_sky)"; } > "$THINKING_TTY" 2>/dev/null || true
 
 # Rio Sena — 2 linhas de água com barco (stats pane)
 _river() {
@@ -168,7 +163,7 @@ _river() {
    ~ ~~~~~~~~ ~ ~ ~~ ~ ~ ~ ~ ~~~ \___\    ~~ ~~  ~~ ~ ~~ ~ ~~~~ ~ ~~
 RIVEREOF
 }
-_river > "$STATS_TTY" 2>/dev/null || true
+{ printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
 
 # Paris urbana — cores noturnas, janelas com padrão acesa/apagada
 _paris() {

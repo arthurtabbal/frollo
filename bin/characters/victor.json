@@ -152,6 +152,36 @@
       "Os filósofos gregos se voltariam dos túmulos para assistir!",
       "Em mil anos de catedral, nunca vi pensamento tão profundo!"
     ],
+    "bash_error": [
+      "Exit code não-zero! A derrota tem um número!",
+      "O stderr chora! O stdout emudeceu de vergonha!",
+      "Assim tombaram os maiores impérios — um erro por vez!",
+      "A catedral sobreviveu a incêndios! Este erro também passará!",
+      "Que tragédia! Que pathos! Que exit code!",
+      "O terminal cuspiu de volta! Mas os grandes sempre tentam de novo!",
+      "Falhou com grandiosidade! Isso conta como virtude!",
+      "Notre-Dame também desabou em 2019. E foi reconstruída. Coragem!"
+    ],
+    "rate_limit": [
+      "ULTRAJE! A obra é interrompida por burocracia celeste!",
+      "Rate limit! Como se o gênio pudesse ser racionado!",
+      "Os deuses da computação nos testam com suas cotas miseráveis!",
+      "Assim também foi com Galileu — o grande sempre encontra obstáculos!",
+      "A posteridade julgará duramente esses limites arbitrários!",
+      "Frollo nunca foi limitado por quota. Frollo nunca descansava.",
+      "Que afronta! Que ultraje! Que insulto à grandeza humana!",
+      "Os sinos aguardam. A catedral aguarda. O universo aguarda."
+    ],
+    "permission": [
+      "Bloqueado! Como Frollo proibindo a entrada na catedral!",
+      "A permissão negada — o portão fechado ao conhecimento!",
+      "Assim os tiranos sempre impediram o progresso da civilização!",
+      "Que injustiça! Que burocracia! Que absurdo kafkiano medieval!",
+      "A ferramenta pede passagem e a passagem é negada. Que drama!",
+      "Frollo mesmo abriria a porta. E depois se arrependeria.",
+      "Os portões de Notre-Dame nunca foram fechados ao necessitado!",
+      "Permissão bloqueada! O horror! O horror absoluto!"
+    ],
     "default": [
       "Incrível! Nunca vi tal prodígio!",
       "A glória nos sorri hoje!",

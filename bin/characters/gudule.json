@@ -152,6 +152,36 @@
       "cogito. mas o ergo sum é discutível.",
       "silêncio produtivo. ou apenas silêncio. as duas coisas."
     ],
+    "bash_error": [
+      "falhou. como tudo que tenta.",
+      "exit code não-zero. a realidade se impõe.",
+      "erro. a pedra não se surpreende.",
+      "stderr. a voz que ninguém quer ouvir. mas que sempre diz a verdade.",
+      "falhou. o sistema foi honesto. ao menos isso.",
+      "deu errado. estava escrito.",
+      "exit code. o número que resume o inevitável.",
+      "erro. e assim o mundo continua, indiferente."
+    ],
+    "rate_limit": [
+      "a quota existe para lembrar que somos finitos.",
+      "rate limit. os sistemas também se cansam. como eu.",
+      "bloqueado. a liberdade sempre teve limites. desde sempre.",
+      "a máquina impõe fronteiras. a pedra entende.",
+      "quota atingida. tudo tem um fim. isso também vai acabar.",
+      "rate limit. pausa forçada. a contemplação não precisa de permissão.",
+      "os limites são a forma do sistema dizer: basta. a vida diz isso também.",
+      "bloqueado pela infraestrutura. bloqueada pelo destino. somos irmãs."
+    ],
+    "permission": [
+      "permissão negada. como sempre.",
+      "o sistema diz não. o sistema sempre disse não.",
+      "bloqueada. como tudo que importa.",
+      "acesso negado. a pedra conhece esse sentimento há séculos.",
+      "sem permissão. permissão para quê. para continuar? para existir?",
+      "portão fechado. Esmeralda também encontrou portas fechadas.",
+      "negado. a palavra mais honesta da computação.",
+      "sem acesso. aprendi a viver sem acesso a muita coisa."
+    ],
     "default": [
       "...",
       "mais um.",

@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import random
 import re
 import select
 import subprocess
@@ -18,8 +19,9 @@ from .theme import (
     CHAT_FG, THINKING_FG, THINKING_TS,
     CLEAR,
 )
-from .tools import log_tool_call, log_tool_result, RUNDIR, TOOLS_LOG, _log, _clear_tools_pane, _ts
+from .tools import log_tool_call, log_tool_result, RUNDIR, TOOLS_LOG, _log, _ts
 from .typewriter import log_animated, SKIP_FLAG, _char_delay
+from .gargulas import _gargula_comment
 
 THINKING_LOG  = RUNDIR / "thinking"
 THINKING_PANE = RUNDIR / "thinking_pane"
@@ -28,6 +30,21 @@ TOOLS_PANE    = RUNDIR / "tools_pane"
 STATS_PANE    = RUNDIR / "stats_pane"
 
 _ANSI_SEQ = re.compile(r'(\033\[[0-9;]*[mKJH])')
+
+_MODEL_PRICES = {
+    "claude-opus-4":   (15.0, 75.0),
+    "claude-sonnet-4":  (3.0, 15.0),
+    "claude-haiku-4":  (0.80,  4.0),
+}
+
+def _model_price(model):
+    for prefix, prices in _MODEL_PRICES.items():
+        if model.startswith(prefix):
+            return prices
+    return (3.0, 15.0)
+
+def _fmt_cost(cost):
+    return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
 @contextlib.contextmanager
@@ -80,7 +97,7 @@ def _resize_thinking(tmux_srv, size):
         return
     rows       = _window_height(tmux_srv)
     tools_lines = max(6, int(rows * 0.26))
-    stats_lines = max(2, int(rows * 0.08))
+    stats_lines = 2
     if isinstance(size, int):
         lines = size
         # durante crescimento: pina stats no tamanho natural, chat absorve
@@ -159,19 +176,6 @@ def run_turn(client, message, images=None):
     """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
     _col[0] = 0
     client._last_response_text = ""
-    # clear nos panes de thinking, tools e stats
-    _clear_tools_pane()
-    THINKING_LOG.write_text("")
-    for _tty_name in ("thinking_tty", "stats_tty"):
-        _tty_file = RUNDIR / _tty_name
-        _tty = _tty_file.read_text().strip() if _tty_file.exists() else ""
-        if _tty:
-            try:
-                _fd = os.open(_tty, os.O_WRONLY | os.O_NOCTTY)
-                os.write(_fd, CLEAR.encode())
-                os.close(_fd)
-            except OSError:
-                pass
     has_images = bool(images)
     clean_text = message.replace('[img]', '').strip() if has_images else message
     cmd = [
@@ -249,13 +253,15 @@ def run_turn(client, message, images=None):
     _max_think_lines = max(12, _rows - int(_rows * 0.26) - max(2, int(_rows * 0.08)) - 6)
     thinking_lines  = [_idle_lines]   # tamanho atual do pane (rastreado localmente)
     thinking_count  = [0]             # newlines acumulados no bloco thinking
-    _resize_thinking(client.tmux_srv, "idle")
     spinner_shown = [False]
+    in_thinking   = [False]
+    gargoyle_next = [0.0]
     rate_limited = [False]
     rate_limit_ts = [0.0]
     rate_limit_retry = [0]
     rate_limit_msg = [""]
     rate_limit_reset_str = [""]
+    model_name = [""]
 
     def _fmt_tok(n):
         return f"{n/1000:.1f}k" if n >= 1000 else str(n)
@@ -297,10 +303,31 @@ def run_turn(client, message, images=None):
         spinner_shown[0] = False
         sys.stdout.flush()
 
+    def _fire_gargoyle_if_ready():
+        if not in_thinking[0]:
+            return
+        now = time.time()
+        if gargoyle_next[0] == 0.0:
+            gargoyle_next[0] = now + random.uniform(8, 20)
+            return
+        if now < gargoyle_next[0]:
+            return
+        gargoyle_next[0] = now + random.uniform(8, 20)
+        prefix, fala = _gargula_comment("thinking")
+        if not prefix:
+            return
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+        _col[0] = 0
+        _typewrite(prefix + fala.rstrip('\n'), delay=0.025, wrap=False)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
     while True:
         ready, _, _ = select.select([proc.stdout], [], [], 0.15)
         if not ready:
             _show_status()
+            _fire_gargoyle_if_ready()
             continue
         raw = proc.stdout.readline()
         if not raw:
@@ -343,7 +370,9 @@ def run_turn(client, message, images=None):
 
             if et == "message_start":
                 rate_limited[0] = False
-                input_tokens = e.get("message", {}).get("usage", {}).get("input_tokens", 0)
+                msg = e.get("message", {})
+                input_tokens = msg.get("usage", {}).get("input_tokens", 0)
+                model_name[0] = msg.get("model", model_name[0])
                 _show_status()
 
             elif et == "message_delta":
@@ -353,6 +382,8 @@ def run_turn(client, message, images=None):
                 block = e.get("content_block", {})
                 current_block = block.get("type")
                 if current_block == "thinking":
+                    in_thinking[0] = True
+                    gargoyle_next[0] = 0.0
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
                 elif current_block == "text":
                     _clear_status()
@@ -395,6 +426,7 @@ def run_turn(client, message, images=None):
 
             elif et == "content_block_stop":
                 if current_block == "thinking":
+                    in_thinking[0] = False
                     _log(THINKING_LOG, f"{RESET}\n")
                 elif current_block == "text":
                     client._streaming_text = False
@@ -430,6 +462,20 @@ def run_turn(client, message, images=None):
                             _clear_status()
                             _handle_permission_ask(tool_name, client.cwd, _retry_needed)
                     log_tool_result(block)
+                    _blk_tool = _tool_names.get(block.get("tool_use_id", ""), "")
+                    if _blk_tool == "Bash" and not block.get("is_error"):
+                        _blk_content = block.get("content", "")
+                        _blk_text = (
+                            next((i.get("text", "") for i in _blk_content if i.get("type") == "text"), "")
+                            if isinstance(_blk_content, list) else str(_blk_content)
+                        )
+                        if re.search(r'exit code[:\s]+([1-9]\d*)', _blk_text, re.IGNORECASE):
+                            _g_prefix, _g_fala = _gargula_comment("bash_error", force=True)
+                            if _g_prefix:
+                                _log(TOOLS_LOG, '\n')
+                                _log(TOOLS_LOG, _g_prefix)
+                                log_animated(TOOLS_LOG, _g_fala)
+                                _log(TOOLS_LOG, '\n')
 
         elif etype == "permission_request":
             approved = _handle_permission(event, proc)
@@ -472,10 +518,18 @@ def run_turn(client, message, images=None):
             msg = rate_limit_msg[0] or "rate limit atingido — tente novamente mais tarde"
         sys.stdout.write(f"\n{YELLOW}⏳  {msg}{RESET}\n")
         sys.stdout.flush()
+        _g_prefix, _g_fala = _gargula_comment("rate_limit", force=True)
+        if _g_prefix:
+            _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
     elapsed = time.time() - start_time
     client._total_input_tokens  = getattr(client, '_total_input_tokens',  0) + input_tokens
     client._total_output_tokens = getattr(client, '_total_output_tokens', 0) + output_tokens
     client._total_elapsed       = getattr(client, '_total_elapsed',       0.0) + elapsed
+    _in_price, _out_price = _model_price(model_name[0])
+    _cost_turn = input_tokens / 1e6 * _in_price + output_tokens / 1e6 * _out_price
+    client._total_cost = getattr(client, '_total_cost', 0.0) + _cost_turn
     _stats_tty_file = RUNDIR / "stats_tty"
     _stats_tty = _stats_tty_file.read_text().strip() if _stats_tty_file.exists() else ""
     if _stats_tty:
@@ -483,22 +537,23 @@ def run_turn(client, message, images=None):
             turn_line = (
                 f"\r\033[2K{DIM}{_ts()}{RESET}  🔢  "
                 f"{_fmt_tok(input_tokens)} in · {_fmt_tok(output_tokens)} out · "
-                f"{elapsed:.1f}s"
+                f"{elapsed:.1f}s · {_fmt_cost(_cost_turn)}"
             )
             total_line = (
                 f"\r\033[2K{DIM}{'sessão':>8}{RESET}  ∑   "
                 f"{_fmt_tok(client._total_input_tokens)} in · "
                 f"{_fmt_tok(client._total_output_tokens)} out · "
-                f"{client._total_elapsed:.0f}s"
+                f"{client._total_elapsed:.0f}s · {_fmt_cost(client._total_cost)}"
             )
-            content = turn_line + "\n" + total_line + "\033[1A\r"
+            content = "\033[H" + turn_line + "\n" + total_line
             _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
             os.write(_fd2, content.encode())
             os.close(_fd2)
         except OSError:
             pass
     proc.wait()
-    _resize_thinking(client.tmux_srv, "idle")
+    if thinking_lines[0] > _idle_lines:
+        _resize_thinking(client.tmux_srv, "idle")
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
     return _retry_needed[0]
@@ -509,6 +564,12 @@ def _handle_permission_ask(tool_name, cwd, retry_flag):
     settings_path = Path(cwd) / ".claude" / "settings.local.json"
 
     sys.stdout.write(f"\n{BG_PERM}{WHITE}  permissão bloqueada  {RESET}  {YELLOW}{tool_name}{RESET}\n")
+    sys.stdout.flush()
+    _g_prefix, _g_fala = _gargula_comment("permission", force=True)
+    if _g_prefix:
+        _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
     sys.stdout.write(f"{DIM}O projeto requer aprovação explícita para {tool_name}.\n")
     sys.stdout.write(f"Adicionar {tool_name} ao allow do projeto (.claude/settings.local.json)? [y/n]{RESET}  ")
     sys.stdout.flush()

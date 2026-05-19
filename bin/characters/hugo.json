@@ -152,6 +152,36 @@
       "esperando a resposta. esperança é uma coisa bonita.",
       "não sei o que tá sendo pensado. nem quero muito saber."
     ],
+    "bash_error": [
+      "deu ruim. como previsto.",
+      "exit code. o veredicto chegou. não é bom.",
+      "falhou. já fiz pior. mas falhou.",
+      "stderr. a língua honesta do sistema.",
+      "erro. pelo menos foi rápido.",
+      "command not found também é uma resposta. nem sempre a que a gente quer.",
+      "deu errado. intervalo?",
+      "não rolou. rola tentar de novo. ou não. tanto faz."
+    ],
+    "rate_limit": [
+      "rate limit. vou aproveitar pra comer alguma coisa.",
+      "quota atingida. a catedral não vai a lugar nenhum.",
+      "bloqueado. hora do intervalo. que por acaso já era hora.",
+      "rate limit. nem sabia que isso existia. agora sei.",
+      "espera aí. eu também tô esperando. em solidariedade.",
+      "a máquina precisa respirar. eu entendo. pedras também descansam.",
+      "quota. cota. cota. quota. de qualquer forma: pausa.",
+      "normal. acontece. tô aqui. com fome. mas aqui."
+    ],
+    "permission": [
+      "permissão bloqueada. alguém não gostou de algo.",
+      "portão fechado. já vi isso antes aqui em cima.",
+      "acesso negado. a burocracia encontrou seu momento de brilho.",
+      "sem permissão. que coisa. que mundo.",
+      "bloqueado. a pedra entende. a pedra também foi proibida de voar.",
+      "permissão. sempre permissão. tudo aqui precisa de permissão.",
+      "não pode. alguém disse não pode. clássico.",
+      "sem acesso. já fui sem acesso pra jantar uma vez. não foi legal."
+    ],
     "default": [
       "ok.",
       "hm.",

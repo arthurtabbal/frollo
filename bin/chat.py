@@ -71,6 +71,10 @@ class ClaudeClient:
     def _print_header(self):
         R = RESET
         _strip = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]')
+        try:
+            cwd_display = "~/" + Path(self.cwd).relative_to(Path.home()).as_posix()
+        except ValueError:
+            cwd_display = self.cwd
         art = [
             f"{HEADER_STONE}   ,             ,{R}",
             f"{HEADER_STONE}   :===.     .===:{R}",
@@ -89,7 +93,7 @@ class ClaudeClient:
         labels = [
             f"  {HEADER_TITLE}Claude Frollo Observer{R}",
             f"  {DIM}Notre-Dame de Paris · 1482{R}",
-            "",
+            f"  {DIM}{cwd_display}{R}",
             f"  {DIM}Shift+Tab: alterna modo  Ctrl+C: sair{R}",
             "",
             "",

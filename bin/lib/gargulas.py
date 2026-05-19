@@ -79,9 +79,9 @@ def _load_characters(directory: Path) -> dict:
 _GARGULAS = _load_characters(CHARACTERS_DIR)
 
 
-def _gargula_comment(tool_name=None):
+def _gargula_comment(tool_name=None, force=False):
     """Retorna (prefix, fala) onde prefix aparece instantâneo e fala é animada. Ou (None, None)."""
-    if random.random() > 0.15:
+    if not force and random.random() > 0.15:
         return None, None
     nome, g = random.choice(list(_GARGULAS.items()))
     cor = g["cor"]
