@@ -12,6 +12,9 @@
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CLIENT="$REPO_DIR/bin/chat.py"
 
+command -v tmux   >/dev/null 2>&1 || { echo "erro: tmux não encontrado — instale com: sudo apt install tmux"; exit 1; }
+command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
+
 # Primeiro arg sem "-" é o diretório do projeto; o resto vai pro chat.py
 PROJ_DIR="$(pwd)"
 if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then

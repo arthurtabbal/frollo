@@ -197,17 +197,25 @@ def run_turn(client, message, images=None):
     elif not client.first_turn:
         cmd.append("--continue")
 
-    client.proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        bufsize=1,
-        cwd=client.cwd,
-    )
+    try:
+        client.proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            cwd=client.cwd,
+        )
+    except FileNotFoundError:
+        sys.stdout.write(
+            f"\n{YELLOW}claude CLI não encontrado.{RESET}"
+            f" {DIM}Instale com: npm i -g @anthropic-ai/claude-code{RESET}\n"
+        )
+        sys.stdout.flush()
+        return False
     proc = client.proc
 
     if has_images:

@@ -117,7 +117,12 @@ class ClaudeClient:
         paste_path = RUNDIR / "paste.txt"
         paste_path.write_text("")
         editor = os.environ.get("EDITOR", "nvim")
-        subprocess.call([editor, str(paste_path)])
+        try:
+            subprocess.call([editor, str(paste_path)])
+        except FileNotFoundError:
+            sys.stdout.write(f"\n{DIM}editor '{editor}' não encontrado — defina $EDITOR{RESET}\n")
+            sys.stdout.flush()
+            return None
         content = paste_path.read_text().strip()
         if not content:
             sys.stdout.write(f"\n{DIM}paste vazio, ignorado{RESET}\n")
