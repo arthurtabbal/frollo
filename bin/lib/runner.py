@@ -260,6 +260,7 @@ def run_turn(client, message, images=None):
     _max_think_lines = max(12, _rows - int(_rows * 0.26) - max(2, int(_rows * 0.08)) - 6)
     thinking_lines  = [_idle_lines]   # tamanho atual do pane (rastreado localmente)
     thinking_count  = [0]             # newlines acumulados no bloco thinking
+    thinking_col    = [0]             # chars na linha atual (para wrap implícito)
     spinner_shown = [False]
     rate_limited = [False]
     rate_limit_ts = [0.0]
@@ -389,10 +390,20 @@ def run_turn(client, message, images=None):
 
                     def _on_newline():
                         thinking_count[0] += 1
+                        thinking_col[0] = 0
                         desired = min(thinking_count[0] + 3, _max_think_lines)
                         if desired > thinking_lines[0]:
                             _resize_thinking(client.tmux_srv, desired)
                             thinking_lines[0] = desired
+
+                    # conta chars do chunk para detectar wrap implícito (~80 cols)
+                    for ch in chunk_t:
+                        if ch == "\n":
+                            thinking_col[0] = 0
+                        else:
+                            thinking_col[0] += 1
+                            if thinking_col[0] % 80 == 0:
+                                _on_newline()
 
                     log_animated(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
                     _show_status()
