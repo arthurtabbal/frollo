@@ -1,4 +1,3 @@
-import contextlib
 import json
 import os
 import re
@@ -7,173 +6,32 @@ import subprocess
 import sys
 import termios
 import time
-import tty
 from datetime import datetime, timedelta
-from pathlib import Path
 
-from .theme import (
-    DIM, RESET, YELLOW, WHITE,
-    BG_PERM, BG_USER,
-    _F, _GLOW, _md, MdBuffer,
+from ..theme import (
+    DIM, RESET, YELLOW,
+    _F, _GLOW, MdBuffer,
     CHAT_FG, THINKING_FG, THINKING_TS,
     CLEAR,
 )
-from .tools import log_tool_call, log_tool_result, RUNDIR, TOOLS_LOG, _log, _ts
-from .typewriter import log_animated, SKIP_FLAG, _char_delay
-from .gargulas import _gargula_comment
+from ..tools import log_tool_call, log_tool_result, TOOLS_LOG, _log, _ts
+from ..typewriter import log_animated, SKIP_FLAG
+from ..gargulas import _gargula_comment
 
-THINKING_LOG  = RUNDIR / "thinking"
-THINKING_PANE = RUNDIR / "thinking_pane"
-CHAT_PANE     = RUNDIR / "chat_pane"
-TOOLS_PANE    = RUNDIR / "tools_pane"
-STATS_PANE    = RUNDIR / "stats_pane"
+from .text import _typewrite, reset_col, col_is_mid_line
+from .panes import (
+    THINKING_LOG, THINKING_PANE, STATS_PANE, TOOLS_PANE,
+    _window_height, _resize_thinking,
+)
+from .permissions import _handle_permission, _handle_permission_ask
+from .stats import _model_price, _fmt_cost
 
-_ANSI_SEQ = re.compile(r'(\033\[[0-9;]*[mKJH])')
-
-_MODEL_PRICES = {
-    "claude-opus-4":   (15.0, 75.0),
-    "claude-sonnet-4":  (3.0, 15.0),
-    "claude-haiku-4":  (0.80,  4.0),
-}
-
-def _model_price(model):
-    for prefix, prices in _MODEL_PRICES.items():
-        if model.startswith(prefix):
-            return prices
-    return (3.0, 15.0)
-
-def _fmt_cost(cost):
-    return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
-
-
-@contextlib.contextmanager
-def _raw_stdin():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        yield
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-
-def _window_height(tmux_srv):
-    """Altura real da janela tmux; fallback para terminal size do processo atual."""
-    if tmux_srv:
-        try:
-            r = subprocess.run(
-                ["tmux", "-L", tmux_srv, "display-message", "-p", "#{window_height}"],
-                capture_output=True, text=True,
-            )
-            return int(r.stdout.strip())
-        except Exception:
-            pass
-    try:
-        return os.get_terminal_size().lines
-    except OSError:
-        return 50
-
-
-def _pane_resize(tmux_srv, pane_file, lines):
-    try:
-        pane_id = pane_file.read_text().strip()
-    except OSError:
-        return
-    if not pane_id:
-        return
-    try:
-        subprocess.run(
-            ["tmux", "-L", tmux_srv, "resize-pane", "-t", pane_id, "-y", str(lines)],
-            capture_output=True,
-        )
-    except Exception:
-        pass
-
-
-def _resize_thinking(tmux_srv, size):
-    """Redimensiona o pane thinking. size: 'idle'|'summary' ou int linhas."""
-    if not tmux_srv or not THINKING_PANE.exists():
-        return
-    rows        = _window_height(tmux_srv)
-    tools_lines = max(6, int(rows * 0.26))
-    stats_lines = 2
-    if isinstance(size, int):
-        _pane_resize(tmux_srv, STATS_PANE, stats_lines)
-        _pane_resize(tmux_srv, THINKING_PANE, size)
-    else:
-        lines = {"idle": max(8, int(rows * 0.16)), "summary": max(5, int(rows * 0.10))}[size]
-        _pane_resize(tmux_srv, TOOLS_PANE, tools_lines)
-        _pane_resize(tmux_srv, STATS_PANE, stats_lines)
-        _pane_resize(tmux_srv, THINKING_PANE, lines)
-
-
-# Coluna atual no terminal — persiste entre chunks do mesmo bloco de texto.
-# Global porque _wrap_text e _typewrite são funções de módulo que compartilham estado.
-_col = 0
-
-
-def _wrap_text(text, width):
-    """Insere quebras de linha em fronteiras de palavras. Atualiza _col como side effect."""
-    global _col
-    result = []
-    col = _col
-    for token in re.split(r'(\s+)', text):
-        if not token:
-            continue
-        if '\n' in token:
-            result.append(token)
-            col = len(token) - token.rfind('\n') - 1
-        elif token.isspace():
-            if col + len(token) > width:
-                result.append('\n')
-                col = 0
-            else:
-                result.append(token)
-                col += len(token)
-        else:
-            if col > 0 and col + len(token) > width:
-                result.append('\n')
-                col = 0
-            result.append(token)
-            col += len(token)
-    _col = col
-    return ''.join(result)
-
-
-def _typewrite(text, delay=0.015, wrap=True):
-    global _col
-    try:
-        width = os.get_terminal_size().columns - 1
-    except OSError:
-        width = 89
-    parts = _ANSI_SEQ.split(text)
-    for i, part in enumerate(parts):
-        if _ANSI_SEQ.match(part):
-            sys.stdout.write(part)
-            sys.stdout.flush()
-        else:
-            body = _wrap_text(part, width) if wrap else part
-            final_col = _col
-            for j, char in enumerate(body):
-                if char == '\n':
-                    _col = 0
-                sys.stdout.write(char)
-                sys.stdout.flush()
-                ready, _, _ = select.select([sys.stdin], [], [], _char_delay(char, delay))
-                if ready:
-                    sys.stdin.readline()
-                    sys.stdout.write(body[j+1:])
-                    sys.stdout.write(''.join(parts[i+1:]))
-                    sys.stdout.flush()
-                    _col = final_col
-                    return
-            _col = final_col
+from ..tools import RUNDIR
 
 
 def run_turn(client, message, images=None):
     """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
-    global _col
-    _col = 0
+    reset_col()
     client._last_response_text = ""
     has_images = bool(images)
     clean_text = message.replace('[img]', '').strip() if has_images else message
@@ -421,9 +279,9 @@ def run_turn(client, message, images=None):
                     if remainder:
                         _typewrite(CHAT_FG + remainder + RESET)
                     sys.stdout.write(RESET)
-                    if _col != 0:
+                    if col_is_mid_line():
                         sys.stdout.write("\n")
-                        _col = 0
+                        reset_col()
                     sys.stdout.flush()
                 current_block = None
 
@@ -543,78 +401,3 @@ def run_turn(client, message, images=None):
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
     return _retry_needed
-
-
-def _handle_permission_ask(tool_name, cwd):
-    """Trata o caso de permissions.ask: tool falhou por falta de aprovação no projeto.
-    Retorna True se permissão foi concedida e o turno deve ser retentado."""
-    settings_path = Path(cwd) / ".claude" / "settings.local.json"
-
-    sys.stdout.write(f"\n{BG_PERM}{WHITE}  permissão bloqueada  {RESET}  {YELLOW}{tool_name}{RESET}\n")
-    sys.stdout.flush()
-    _g_prefix, _g_fala = _gargula_comment("permission", force=True)
-    if _g_prefix:
-        _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-    sys.stdout.write(f"{DIM}O projeto requer aprovação explícita para {tool_name}.\n")
-    sys.stdout.write(f"Adicionar {tool_name} ao allow do projeto (.claude/settings.local.json)? [y/n]{RESET}  ")
-    sys.stdout.flush()
-
-    with _raw_stdin():
-        ch = os.read(sys.stdin.fileno(), 1).decode('utf-8', errors='replace').lower()
-
-    if ch == 'y':
-        sys.stdout.write("y\n")
-        sys.stdout.flush()
-        try:
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
-            allow = settings.setdefault("permissions", {}).setdefault("allow", [])
-            if tool_name not in allow:
-                allow.append(tool_name)
-                settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-            sys.stdout.write(f"{DIM}✓ {tool_name} adicionado — retentando automaticamente…{RESET}\n\n")
-            sys.stdout.flush()
-            return True
-        except Exception as e:
-            sys.stdout.write(f"{DIM}erro ao atualizar settings: {e}{RESET}\n\n")
-            sys.stdout.flush()
-            return False
-    else:
-        sys.stdout.write("n\n\n")
-        sys.stdout.flush()
-        return False
-
-
-def _handle_permission(event, proc):
-    tool = event.get("tool_name", event.get("tool", "?"))
-    inp  = event.get("input", {})
-
-    sys.stdout.write(f"\n{BG_PERM}{WHITE}  permissão  {RESET}  {YELLOW}{tool}{RESET}")
-    if inp:
-        detail = json.dumps(inp, ensure_ascii=False)
-        detail = detail if len(detail) <= 120 else detail[:120] + "…"
-        sys.stdout.write(f"  {DIM}{detail}{RESET}")
-    sys.stdout.write(f"\n{DIM}[y] permitir  [n] negar  [a] permitir sempre{RESET}  ")
-    sys.stdout.flush()
-
-    with _raw_stdin():
-        ch = os.read(sys.stdin.fileno(), 1).decode('utf-8', errors='replace').lower()
-
-    if ch == 'a':
-        sys.stdout.write(f"a  {DIM}(permitir sempre){RESET}\n\n")
-        sys.stdout.flush()
-        proc.stdin.write("a\n")
-        proc.stdin.flush()
-        return True
-    elif ch == 'y':
-        sys.stdout.write(f"y  {DIM}(permitido){RESET}\n\n")
-        sys.stdout.flush()
-        proc.stdin.write("y\n")
-        proc.stdin.flush()
-        return True
-    else:
-        sys.stdout.write(f"n  {DIM}(negado){RESET}\n\n")
-        sys.stdout.flush()
-        return False
