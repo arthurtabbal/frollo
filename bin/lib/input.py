@@ -26,7 +26,6 @@ def _get_clipboard_image():
     return None
 
 
-
 def _visual_pos(visible_prompt, line_chars, idx, cols):
     """Retorna (row, col) da posição idx no bloco exibido, considerando wrap e \n.
 
@@ -78,7 +77,6 @@ class InputReader:
         """Lê input do terminal em modo raw, com suporte a movimento de cursor e quebra de linha.
 
         pre_clear_hook(text): chamado com o texto submetido, antes do _CLEAR.
-        Útil para capturar estado do terminal enquanto a resposta anterior ainda está visível.
         """
         sys.stdout.write(self._prompt())
         sys.stdout.flush()
@@ -125,39 +123,74 @@ class InputReader:
             sys.stdout.flush()
             trow = crow
 
+        def _submit():
+            text = ''.join(line)
+            if text.strip():
+                self._history.append(text)
+            if pre_clear_hook:
+                pre_clear_hook(text)
+            cols     = os.get_terminal_size().columns
+            mode_val = self._mode_ref[0].value
+            erow, _  = _visual_pos(self._vprompt(), line, len(line), cols)
+            if erow > trow:
+                sys.stdout.write(f'\033[{erow - trow}B')
+            sys.stdout.write('\r')
+            if erow > 0:
+                sys.stdout.write(f'\033[{erow}A')
+            sys.stdout.write('\033[J')  # apaga o prompt da tela sem ir pro scrollback
+            sys.stdout.write(CLEAR)    # empurra conteúdo anterior pro scrollback
+            text_lines = text.split('\n')
+            first = f"  ({mode_val}) >_  {text_lines[0]}"
+            rem   = len(first) % cols
+            sys.stdout.write(f'\033[J{BG_USER}{WHITE}{first}{" " * ((cols - rem) if rem else 0)}{RESET}\r\n')
+            for ln in text_lines[1:]:
+                label = f"  {ln}"
+                rem   = len(label) % cols
+                sys.stdout.write(f'{BG_USER}{WHITE}{label}{" " * ((cols - rem) if rem else 0)}{RESET}\r\n')
+            sys.stdout.flush()
+            return text
+
+        def _handle_escape(rest):
+            nonlocal cursor, hist_idx, draft, line
+            if rest.startswith(b'[Z'):                                                    # Shift+Tab
+                self._cycle_mode(modes)
+                _redraw()
+            elif rest in (b'\r', b'OM') or rest.startswith((b'[13;2u', b'[27;2;13~')):  # Alt+Enter
+                line.insert(cursor, '\n')
+                cursor += 1
+                _redraw()
+            elif rest.startswith(b'[C') and cursor < len(line):                          # →
+                cursor += 1
+                _redraw()
+            elif rest.startswith(b'[D') and cursor > 0:                                  # ←
+                cursor -= 1
+                _redraw()
+            elif rest.startswith((b'[H', b'[1~')) and cursor > 0:                        # Home
+                cursor = 0
+                _redraw()
+            elif rest.startswith((b'[F', b'[4~')) and cursor < len(line):                # End
+                cursor = len(line)
+                _redraw()
+            elif rest.startswith((b'[A', b'OA')) and self._history and hist_idx > 0:     # ↑
+                if hist_idx == len(self._history):
+                    draft = ''.join(line)
+                hist_idx -= 1
+                line   = list(self._history[hist_idx])
+                cursor = len(line)
+                _redraw()
+            elif rest.startswith((b'[B', b'OB')) and hist_idx < len(self._history):      # ↓
+                hist_idx += 1
+                line   = list(draft if hist_idx == len(self._history) else self._history[hist_idx])
+                cursor = len(line)
+                _redraw()
+
         try:
             tty.setraw(fd)
             while True:
                 b = os.read(fd, 1)
 
                 if b in (b'\r', b'\n'):
-                    text = ''.join(line)
-                    if text.strip():
-                        self._history.append(text)
-                    if pre_clear_hook:
-                        pre_clear_hook(text)
-                    cols = os.get_terminal_size().columns
-                    vp = self._vprompt()
-                    mode_val = self._mode_ref[0].value
-                    erow, _ = _visual_pos(vp, line, len(line), cols)
-                    # move para o fim do bloco
-                    if erow > trow:
-                        sys.stdout.write(f'\033[{erow - trow}B')
-                    sys.stdout.write('\r')
-                    if erow > 0:
-                        sys.stdout.write(f'\033[{erow}A')
-                    sys.stdout.write('\033[J')  # apaga o prompt da tela sem ir pro scrollback
-                    sys.stdout.write(CLEAR)    # empurra conteúdo anterior pro scrollback
-                    text_lines = text.split('\n')
-                    first = f"  ({mode_val}) >_  {text_lines[0]}"
-                    rem = len(first) % cols
-                    sys.stdout.write(f'\033[J{BG_USER}{WHITE}{first}{" " * ((cols - rem) if rem else 0)}{RESET}\r\n')
-                    for ln in text_lines[1:]:
-                        label = f"  {ln}"
-                        rem = len(label) % cols
-                        sys.stdout.write(f'{BG_USER}{WHITE}{label}{" " * ((cols - rem) if rem else 0)}{RESET}\r\n')
-                    sys.stdout.flush()
-                    return text
+                    return _submit()
 
                 elif b == b'\x7f':  # backspace
                     if cursor > 0:
@@ -192,53 +225,16 @@ class InputReader:
                     if result:
                         b64, mime = result
                         self.pending_image = {'data': b64, 'media_type': mime}
-                        for ch in '[img]':
-                            line.insert(cursor, ch)
-                            cursor += 1
+                        tag = list('[img]')
+                        line[cursor:cursor] = tag
+                        cursor += len(tag)
                         _redraw()
                     buf = b''
 
                 elif b == b'\x1b':  # sequências de escape
                     ready, _, _ = select.select([sys.stdin], [], [], 0.05)
                     if ready:
-                        rest = os.read(fd, 8)
-                        if rest.startswith(b'[Z'):    # Shift+Tab
-                            self._cycle_mode(modes)
-                            _redraw()
-                        elif rest in (b'\r', b'OM') or rest.startswith(b'[13;2u') or rest.startswith(b'[27;2;13~'):  # Shift+Enter / Alt+Enter
-                            line.insert(cursor, '\n')
-                            cursor += 1
-                            _redraw()
-                        elif rest.startswith(b'[C'):  # →
-                            if cursor < len(line):
-                                cursor += 1
-                                _redraw()
-                        elif rest.startswith(b'[D'):  # ←
-                            if cursor > 0:
-                                cursor -= 1
-                                _redraw()
-                        elif rest.startswith(b'[H') or rest.startswith(b'[1~'):  # Home
-                            if cursor > 0:
-                                cursor = 0
-                                _redraw()
-                        elif rest.startswith(b'[F') or rest.startswith(b'[4~'):  # End
-                            if cursor < len(line):
-                                cursor = len(line)
-                                _redraw()
-                        elif rest.startswith(b'[A') or rest.startswith(b'OA'):  # ↑ — histórico anterior
-                            if self._history and hist_idx > 0:
-                                if hist_idx == len(self._history):
-                                    draft = ''.join(line)
-                                hist_idx -= 1
-                                line = list(self._history[hist_idx])
-                                cursor = len(line)
-                                _redraw()
-                        elif rest.startswith(b'[B') or rest.startswith(b'OB'):  # ↓ — histórico seguinte
-                            if hist_idx < len(self._history):
-                                hist_idx += 1
-                                line = list(draft if hist_idx == len(self._history) else self._history[hist_idx])
-                                cursor = len(line)
-                                _redraw()
+                        _handle_escape(os.read(fd, 8))
                     buf = b''
 
                 else:
