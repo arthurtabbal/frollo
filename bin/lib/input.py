@@ -92,6 +92,18 @@ class InputReader:
         hist_idx = len(self._history)
         draft = ''
 
+        def _insert(c):
+            nonlocal cursor, trow
+            line.insert(cursor, c)
+            cursor += 1
+            if cursor == len(line):
+                sys.stdout.write(c)
+                sys.stdout.flush()
+                cols = os.get_terminal_size().columns
+                trow, _ = _visual_pos(self._vprompt(), line, cursor, cols)
+            else:
+                _redraw()
+
         def _redraw():
             nonlocal trow
             cols = os.get_terminal_size().columns
@@ -233,29 +245,12 @@ class InputReader:
                     buf += b
                     try:
                         c = buf.decode('utf-8')
-                        line.insert(cursor, c)
-                        cursor += 1
-                        if cursor == len(line):
-                            sys.stdout.write(c)
-                            sys.stdout.flush()
-                            cols = os.get_terminal_size().columns
-                            trow, _ = _visual_pos(self._vprompt(), line, cursor, cols)
-                        else:
-                            _redraw()
-                        buf = b''
                     except UnicodeDecodeError:
-                        if len(buf) >= 4:
-                            c = buf.decode('utf-8', errors='replace')
-                            line.insert(cursor, c)
-                            cursor += 1
-                            if cursor == len(line):
-                                sys.stdout.write(c)
-                                sys.stdout.flush()
-                                cols = os.get_terminal_size().columns
-                                trow, _ = _visual_pos(self._vprompt(), line, cursor, cols)
-                            else:
-                                _redraw()
-                            buf = b''
+                        if len(buf) < 4:
+                            continue
+                        c = buf.decode('utf-8', errors='replace')
+                    _insert(c)
+                    buf = b''
 
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)

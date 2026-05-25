@@ -94,29 +94,29 @@ def _resize_thinking(tmux_srv, size):
     """Redimensiona o pane thinking. size: 'idle'|'summary' ou int linhas."""
     if not tmux_srv or not THINKING_PANE.exists():
         return
-    rows       = _window_height(tmux_srv)
+    rows        = _window_height(tmux_srv)
     tools_lines = max(6, int(rows * 0.26))
     stats_lines = 2
     if isinstance(size, int):
-        lines = size
-        # durante crescimento: pina stats no tamanho natural, chat absorve
         _pane_resize(tmux_srv, STATS_PANE, stats_lines)
-        _pane_resize(tmux_srv, THINKING_PANE, lines)
+        _pane_resize(tmux_srv, THINKING_PANE, size)
     else:
         lines = {"idle": max(8, int(rows * 0.16)), "summary": max(5, int(rows * 0.10))}[size]
-        # resize de baixo pra cima: tools e stats fixos, thinking encolhe/cresce,
-        # tmux distribui o restante pro chat automaticamente
         _pane_resize(tmux_srv, TOOLS_PANE, tools_lines)
         _pane_resize(tmux_srv, STATS_PANE, stats_lines)
         _pane_resize(tmux_srv, THINKING_PANE, lines)
-_col = [0]  # coluna atual no terminal — persiste entre chunks do mesmo bloco de texto
 
+
+# Coluna atual no terminal — persiste entre chunks do mesmo bloco de texto.
+# Global porque _wrap_text e _typewrite são funções de módulo que compartilham estado.
+_col = 0
 
 
 def _wrap_text(text, width):
     """Insere quebras de linha em fronteiras de palavras. Atualiza _col como side effect."""
+    global _col
     result = []
-    col = _col[0]
+    col = _col
     for token in re.split(r'(\s+)', text):
         if not token:
             continue
@@ -136,11 +136,12 @@ def _wrap_text(text, width):
                 col = 0
             result.append(token)
             col += len(token)
-    _col[0] = col
+    _col = col
     return ''.join(result)
 
 
 def _typewrite(text, delay=0.015, wrap=True):
+    global _col
     try:
         width = os.get_terminal_size().columns - 1
     except OSError:
@@ -152,10 +153,10 @@ def _typewrite(text, delay=0.015, wrap=True):
             sys.stdout.flush()
         else:
             body = _wrap_text(part, width) if wrap else part
-            final_col = _col[0]  # _wrap_text already computed the correct final column
+            final_col = _col
             for j, char in enumerate(body):
                 if char == '\n':
-                    _col[0] = 0
+                    _col = 0
                 sys.stdout.write(char)
                 sys.stdout.flush()
                 ready, _, _ = select.select([sys.stdin], [], [], _char_delay(char, delay))
@@ -164,16 +165,15 @@ def _typewrite(text, delay=0.015, wrap=True):
                     sys.stdout.write(body[j+1:])
                     sys.stdout.write(''.join(parts[i+1:]))
                     sys.stdout.flush()
-                    _col[0] = final_col
+                    _col = final_col
                     return
-            _col[0] = final_col  # \n no meio do body zera _col; restaura o valor correto
-
-
+            _col = final_col
 
 
 def run_turn(client, message, images=None):
     """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
-    _col[0] = 0
+    global _col
+    _col = 0
     client._last_response_text = ""
     has_images = bool(images)
     clean_text = message.replace('[img]', '').strip() if has_images else message
@@ -229,72 +229,69 @@ def run_turn(client, message, images=None):
         proc.stdin.flush()
         proc.stdin.close()
 
-    # limpa flag de skip de turno anterior
     try:
         SKIP_FLAG.unlink()
     except FileNotFoundError:
         pass
 
-    # desabilita echo durante o turno — evita que teclas pressionadas
-    # apareçam no meio do typewriter
+    # Desabilita echo durante o turno — evita que teclas apareçam no meio do typewriter.
     _fd = sys.stdin.fileno()
     _old_term = termios.tcgetattr(_fd)
     _no_echo = list(_old_term)
     _no_echo[3] &= ~termios.ECHO
     termios.tcsetattr(_fd, termios.TCSADRAIN, _no_echo)
 
-    _tool_names = {}   # tool_use_id → name, para resolver nomes em erros de permissão
-    _retry_needed = [False]
-    start_time = time.time()
-    input_tokens = 0
-    output_tokens = 0
-    current_block = None
-    text_started = False
+    _tool_names      = {}
+    _retry_needed    = False
+    start_time       = time.time()
+    input_tokens     = 0
+    output_tokens    = 0
+    current_block    = None
+    text_started     = False
     client._streaming_text = False
-    text_block_count = [0]
-    fire_frame = [0]
-    in_code_block = [False]
-    md_buf = MdBuffer()
-    _rows = _window_height(client.tmux_srv)
-    _idle_lines     = max(8,  int(_rows * 0.16))
+    text_block_count = 0
+    fire_frame       = 0
+    in_code_block    = False
+    md_buf           = MdBuffer()
+    _rows            = _window_height(client.tmux_srv)
+    _idle_lines      = max(8,  int(_rows * 0.16))
     _max_think_lines = max(12, _rows - int(_rows * 0.26) - max(2, int(_rows * 0.08)) - 6)
-    thinking_lines  = [_idle_lines]   # tamanho atual do pane (rastreado localmente)
-    thinking_count  = [0]             # newlines acumulados no bloco thinking
-    thinking_col    = [0]             # chars na linha atual (para wrap implícito)
-    spinner_shown = [False]
-    rate_limited = [False]
-    rate_limit_ts = [0.0]
-    rate_limit_retry = [0]
-    rate_limit_msg = [""]
-    rate_limit_reset_str = [""]
-    model_name = [""]
+    thinking_lines   = _idle_lines
+    thinking_count   = 0
+    thinking_col     = 0
+    spinner_shown    = False
+    rate_limited     = False
+    rate_limit_ts    = 0.0
+    rate_limit_retry = 0
+    rate_limit_msg   = ""
+    rate_limit_reset_str = ""
+    model_name       = ""
 
     def _fmt_tok(n):
         return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
     def _show_status():
+        nonlocal fire_frame, spinner_shown
         if client._streaming_text:
             return
         elapsed = time.time() - start_time
-        tok = input_tokens + output_tokens
-        flame = _F[fire_frame[0] % len(_F)]
-        glow  = _GLOW[fire_frame[0] % len(_GLOW)]
-        fire_frame[0] += 1
+        tok     = input_tokens + output_tokens
+        flame   = _F[fire_frame % len(_F)]
+        glow    = _GLOW[fire_frame % len(_GLOW)]
+        fire_frame += 1
         tok_part = f"· {_fmt_tok(tok)} tok " if tok else ""
-        if not spinner_shown[0]:
+        if not spinner_shown:
             sys.stdout.write('\n')
-            spinner_shown[0] = True
-        if rate_limited[0]:
-            waiting = time.time() - rate_limit_ts[0]
-            if rate_limit_retry[0]:
-                remaining = max(0, rate_limit_retry[0] - waiting)
-                reset_info = f"{rate_limit_reset_str[0]}  {DIM}({remaining:.0f}s){RESET}" if rate_limit_reset_str[0] else f"{remaining:.0f}s"
-                wait_part = f"retoma às {reset_info}"
+            spinner_shown = True
+        if rate_limited:
+            waiting = time.time() - rate_limit_ts
+            if rate_limit_retry:
+                remaining  = max(0, rate_limit_retry - waiting)
+                reset_info = f"{rate_limit_reset_str}  {DIM}({remaining:.0f}s){RESET}" if rate_limit_reset_str else f"{remaining:.0f}s"
+                wait_part  = f"retoma às {reset_info}"
             else:
                 wait_part = f"aguardando {waiting:.0f}s"
-            sys.stdout.write(
-                f"\r\033[2K{YELLOW}⏳{RESET}  {YELLOW}rate limit{RESET}  {wait_part}"
-            )
+            sys.stdout.write(f"\r\033[2K{YELLOW}⏳{RESET}  {YELLOW}rate limit{RESET}  {wait_part}")
         else:
             sys.stdout.write(
                 f"\r\033[2K{flame}{RESET}  {glow}pensando…{RESET}  {DIM}{elapsed:.0f}s {tok_part}{RESET}"
@@ -302,11 +299,12 @@ def run_turn(client, message, images=None):
         sys.stdout.flush()
 
     def _clear_status():
-        if spinner_shown[0]:
-            sys.stdout.write("\r\033[2K\033[1A\r\033[2K")  # limpa spinner + linha em branco acima
+        nonlocal spinner_shown
+        if spinner_shown:
+            sys.stdout.write("\r\033[2K\033[1A\r\033[2K")
         else:
             sys.stdout.write("\r\033[2K")
-        spinner_shown[0] = False
+        spinner_shown = False
         sys.stdout.flush()
 
     while True:
@@ -327,55 +325,52 @@ def run_turn(client, message, images=None):
                 _rl.write(f"non-json: {raw}\n")
             _rl_match = re.search(r'resets?\s+(\d{1,2}:\d{2}(?:am|pm))', raw, re.IGNORECASE)
             if _rl_match or "hit your limit" in raw.lower():
-                if not rate_limited[0]:
-                    rate_limited[0] = True
-                    rate_limit_ts[0] = time.time()
-                if _rl_match and not rate_limit_reset_str[0]:
+                if not rate_limited:
+                    rate_limited = True
+                    rate_limit_ts = time.time()
+                if _rl_match and not rate_limit_reset_str:
                     try:
-                        _t = datetime.strptime(_rl_match.group(1).lower(), "%I:%M%p")
-                        _now = datetime.now()
+                        _t    = datetime.strptime(_rl_match.group(1).lower(), "%I:%M%p")
+                        _now  = datetime.now()
                         _reset = _now.replace(hour=_t.hour, minute=_t.minute, second=0, microsecond=0)
                         if _reset <= _now:
                             _reset += timedelta(days=1)
-                        if _reset.date() == _now.date():
-                            rate_limit_reset_str[0] = _reset.strftime("%H:%M")
-                        else:
-                            rate_limit_reset_str[0] = _reset.strftime("%d/%m %H:%M")
+                        rate_limit_reset_str = _reset.strftime("%H:%M" if _reset.date() == _now.date() else "%d/%m %H:%M")
                     except ValueError:
                         pass
-            elif rate_limited[0]:
-                rate_limit_msg[0] = raw
+            elif rate_limited:
+                rate_limit_msg = raw
             continue
 
         etype = event.get("type")
 
         if etype == "stream_event":
-            e = event.get("event", {})
+            e  = event.get("event", {})
             et = e.get("type")
 
             if et == "message_start":
-                rate_limited[0] = False
-                msg = e.get("message", {})
+                rate_limited = False
+                msg          = e.get("message", {})
                 input_tokens = msg.get("usage", {}).get("input_tokens", 0)
-                model_name[0] = msg.get("model", model_name[0])
+                model_name   = msg.get("model", model_name)
                 _show_status()
 
             elif et == "message_delta":
                 output_tokens = e.get("usage", {}).get("output_tokens", 0)
 
             elif et == "content_block_start":
-                block = e.get("content_block", {})
+                block         = e.get("content_block", {})
                 current_block = block.get("type")
                 if current_block == "thinking":
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
                 elif current_block == "text":
                     _clear_status()
-                    if thinking_count[0] > 0:
+                    if thinking_count > 0:
                         _resize_thinking(client.tmux_srv, "summary")
-                    if text_block_count[0] > 0:
+                    if text_block_count > 0:
                         sys.stdout.write("\n")
                     sys.stdout.flush()
-                    text_block_count[0] += 1
+                    text_block_count += 1
                     text_started = True
                     client._streaming_text = True
                     sys.stdout.write(CHAT_FG)
@@ -389,20 +384,20 @@ def run_turn(client, message, images=None):
                     chunk_t = delta.get("thinking", "")
 
                     def _on_newline():
-                        thinking_count[0] += 1
-                        thinking_col[0] = 0
-                        desired = min(thinking_count[0] + 3, _max_think_lines)
-                        if desired > thinking_lines[0]:
+                        nonlocal thinking_count, thinking_col, thinking_lines
+                        thinking_count += 1
+                        thinking_col    = 0
+                        desired = min(thinking_count + 3, _max_think_lines)
+                        if desired > thinking_lines:
                             _resize_thinking(client.tmux_srv, desired)
-                            thinking_lines[0] = desired
+                            thinking_lines = desired
 
-                    # conta chars do chunk para detectar wrap implícito (~80 cols)
                     for ch in chunk_t:
                         if ch == "\n":
-                            thinking_col[0] = 0
+                            thinking_col = 0
                         else:
-                            thinking_col[0] += 1
-                            if thinking_col[0] % 80 == 0:
+                            thinking_col += 1
+                            if thinking_col % 80 == 0:
                                 _on_newline()
 
                     log_animated(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
@@ -412,8 +407,8 @@ def run_turn(client, message, images=None):
                     chunk = delta.get("text", "")
                     client._last_response_text += chunk
                     if chunk.count("```") % 2 == 1:
-                        in_code_block[0] = not in_code_block[0]
-                    rendered = chunk if in_code_block[0] else md_buf.feed(chunk)
+                        in_code_block = not in_code_block
+                    rendered = chunk if in_code_block else md_buf.feed(chunk)
                     if rendered:
                         _typewrite(CHAT_FG + rendered + RESET)
 
@@ -426,9 +421,9 @@ def run_turn(client, message, images=None):
                     if remainder:
                         _typewrite(CHAT_FG + remainder + RESET)
                     sys.stdout.write(RESET)
-                    if _col[0] != 0:
+                    if _col != 0:
                         sys.stdout.write("\n")
-                        _col[0] = 0
+                        _col = 0
                     sys.stdout.flush()
                 current_block = None
 
@@ -443,21 +438,22 @@ def run_turn(client, message, images=None):
             for block in event.get("message", {}).get("content", []):
                 if block.get("type") == "tool_result":
                     if block.get("is_error"):
-                        content = block.get("content", "")
+                        content  = block.get("content", "")
                         err_text = (
                             next((i.get("text", "") for i in content if i.get("type") == "text"), "")
                             if isinstance(content, list) else str(content)
                         )
                         if ("requested permissions" in err_text or "haven't granted" in err_text
-                            or "requires approval" in err_text):
+                                or "requires approval" in err_text):
                             tool_name = _tool_names.get(block.get("tool_use_id", ""), "?")
                             _clear_status()
-                            _handle_permission_ask(tool_name, client.cwd, _retry_needed)
+                            if _handle_permission_ask(tool_name, client.cwd):
+                                _retry_needed = True
                     log_tool_result(block)
                     _blk_tool = _tool_names.get(block.get("tool_use_id", ""), "")
                     if _blk_tool == "Bash" and not block.get("is_error"):
                         _blk_content = block.get("content", "")
-                        _blk_text = (
+                        _blk_text    = (
                             next((i.get("text", "") for i in _blk_content if i.get("type") == "text"), "")
                             if isinstance(_blk_content, list) else str(_blk_content)
                         )
@@ -481,33 +477,28 @@ def run_turn(client, message, images=None):
                 client.session_id = sid
 
         elif etype == "rate_limit_event":
-            rate_limited[0] = True
-            rate_limit_ts[0] = time.time()
+            rate_limited  = True
+            rate_limit_ts = time.time()
             with open("/tmp/claude-rate-limit.log", "a") as _rl:
                 _rl.write(json.dumps(event) + "\n")
-            rate_limit_retry[0] = event.get("retryAfter", event.get("retry_after", 0))
-            if rate_limit_retry[0]:
-                reset_dt = datetime.fromtimestamp(rate_limit_ts[0] + rate_limit_retry[0])
-                today = datetime.now().date()
-                if reset_dt.date() == today:
-                    rate_limit_reset_str[0] = reset_dt.strftime("%H:%M:%S")
-                else:
-                    rate_limit_reset_str[0] = reset_dt.strftime("%d/%m %H:%M:%S")
+            rate_limit_retry = event.get("retryAfter", event.get("retry_after", 0))
+            if rate_limit_retry:
+                reset_dt = datetime.fromtimestamp(rate_limit_ts + rate_limit_retry)
+                today    = datetime.now().date()
+                rate_limit_reset_str = reset_dt.strftime("%H:%M:%S" if reset_dt.date() == today else "%d/%m %H:%M:%S")
             _show_status()
 
         elif etype not in ("system", None):
             with open("/tmp/claude-client-events.log", "a") as f:
                 f.write(json.dumps(event) + "\n")
 
-    if text_started and spinner_shown[0]:
+    if text_started and spinner_shown:
         sys.stdout.write("\n")
         sys.stdout.flush()
     _clear_status()
-    if rate_limited[0] and not text_started:
-        if rate_limit_reset_str[0]:
-            msg = f"rate limit — quota retoma às {rate_limit_reset_str[0]}"
-        else:
-            msg = rate_limit_msg[0] or "rate limit atingido — tente novamente mais tarde"
+    if rate_limited and not text_started:
+        msg = f"rate limit — quota retoma às {rate_limit_reset_str}" if rate_limit_reset_str \
+              else rate_limit_msg or "rate limit atingido — tente novamente mais tarde"
         sys.stdout.write(f"\n{YELLOW}⏳  {msg}{RESET}\n")
         sys.stdout.flush()
         _g_prefix, _g_fala = _gargula_comment("rate_limit", force=True)
@@ -515,13 +506,15 @@ def run_turn(client, message, images=None):
             _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
             sys.stdout.write("\n")
             sys.stdout.flush()
+
     elapsed = time.time() - start_time
     client._total_input_tokens  = getattr(client, '_total_input_tokens',  0) + input_tokens
     client._total_output_tokens = getattr(client, '_total_output_tokens', 0) + output_tokens
     client._total_elapsed       = getattr(client, '_total_elapsed',       0.0) + elapsed
-    _in_price, _out_price = _model_price(model_name[0])
-    _cost_turn = input_tokens / 1e6 * _in_price + output_tokens / 1e6 * _out_price
+    _in_price, _out_price = _model_price(model_name)
+    _cost_turn  = input_tokens / 1e6 * _in_price + output_tokens / 1e6 * _out_price
     client._total_cost = getattr(client, '_total_cost', 0.0) + _cost_turn
+
     _stats_tty_file = RUNDIR / "stats_tty"
     _stats_tty = _stats_tty_file.read_text().strip() if _stats_tty_file.exists() else ""
     if _stats_tty:
@@ -543,16 +536,18 @@ def run_turn(client, message, images=None):
             os.close(_fd2)
         except OSError:
             pass
+
     proc.wait()
-    if thinking_lines[0] > _idle_lines:
+    if thinking_lines > _idle_lines:
         _resize_thinking(client.tmux_srv, "idle")
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
-    return _retry_needed[0]
+    return _retry_needed
 
 
-def _handle_permission_ask(tool_name, cwd, retry_flag):
-    """Trata o caso de permissions.ask: tool falhou por falta de aprovação no projeto."""
+def _handle_permission_ask(tool_name, cwd):
+    """Trata o caso de permissions.ask: tool falhou por falta de aprovação no projeto.
+    Retorna True se permissão foi concedida e o turno deve ser retentado."""
     settings_path = Path(cwd) / ".claude" / "settings.local.json"
 
     sys.stdout.write(f"\n{BG_PERM}{WHITE}  permissão bloqueada  {RESET}  {YELLOW}{tool_name}{RESET}\n")
@@ -570,7 +565,7 @@ def _handle_permission_ask(tool_name, cwd, retry_flag):
         ch = os.read(sys.stdin.fileno(), 1).decode('utf-8', errors='replace').lower()
 
     if ch == 'y':
-        sys.stdout.write(f"y\n")
+        sys.stdout.write("y\n")
         sys.stdout.flush()
         try:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -580,13 +575,16 @@ def _handle_permission_ask(tool_name, cwd, retry_flag):
                 allow.append(tool_name)
                 settings_path.write_text(json.dumps(settings, indent=2) + "\n")
             sys.stdout.write(f"{DIM}✓ {tool_name} adicionado — retentando automaticamente…{RESET}\n\n")
-            retry_flag[0] = True
+            sys.stdout.flush()
+            return True
         except Exception as e:
             sys.stdout.write(f"{DIM}erro ao atualizar settings: {e}{RESET}\n\n")
-        sys.stdout.flush()
+            sys.stdout.flush()
+            return False
     else:
-        sys.stdout.write(f"n\n\n")
+        sys.stdout.write("n\n\n")
         sys.stdout.flush()
+        return False
 
 
 def _handle_permission(event, proc):

@@ -10,8 +10,8 @@ from .typewriter import log_animated
 RUNDIR    = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 TOOLS_LOG = RUNDIR / "tools"
 
-_MAX_DISPLAY = 72          # chars de conteúdo antes do wrap no pane (~88 cols - prefixo)
-_last_nvim_open = [0.0]   # timestamp do último :e enviado ao nvim
+_MAX_DISPLAY    = 72   # chars de conteúdo antes do wrap no pane (~88 cols - prefixo)
+_last_nvim_open = 0.0  # timestamp do último :e enviado ao nvim
 
 
 def _ts():
@@ -51,6 +51,26 @@ def _shorten_path(fp, maxlen=55):
     return fp
 
 
+def _is_vim_editor(editor_bin):
+    return editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
+
+
+def _entry(color, icon, display):
+    _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {color}{icon}{RESET}  {display}\n")
+
+
+def _nvim_open(fp, loc, nvim_pane, tmux_srv, editor_bin):
+    global _last_nvim_open
+    if not (nvim_pane and fp and _is_vim_editor(editor_bin)):
+        return
+    srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
+    os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
+    gap = 0.3 - (time.time() - _last_nvim_open)
+    if gap > 0:
+        time.sleep(gap)
+    _last_nvim_open = time.time()
+
+
 def _find_edit_line(file_path, old_string):
     if not old_string:
         return None
@@ -70,62 +90,41 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     inp  = block.get("input", {})
 
     if name == "Bash":
-        desc = inp.get("description", "")
-        cmd  = inp.get("command", "").replace("\n", " ")
-        raw  = desc if desc else cmd
-        display = raw if len(raw) <= _MAX_DISPLAY else raw[:_MAX_DISPLAY - 1] + "…"
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_BASH}⚡{RESET}  {display}\n")
+        raw = inp.get("description") or inp.get("command", "").replace("\n", " ")
+        _entry(TOOLS_BASH, "⚡", raw if len(raw) <= _MAX_DISPLAY else raw[:_MAX_DISPLAY - 1] + "…")
 
     elif name in ("Read", "Glob"):
-        fp = inp.get("file_path", inp.get("pattern", ""))
+        fp     = inp.get("file_path", inp.get("pattern", ""))
         offset = inp.get("offset")
-        fp_display = _shorten_path(fp) + (f":{offset}" if offset else "")
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}◎{RESET}  {fp_display}\n")
-        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
-        if name == "Read" and nvim_pane and fp and _is_vim and os.path.isfile(fp):
-            srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
-            loc = f"+{offset} " if offset else ""
-            os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
-            gap = 0.3 - (time.time() - _last_nvim_open[0])
-            if gap > 0:
-                time.sleep(gap)
-            _last_nvim_open[0] = time.time()
+        _entry(TOOLS_READ, "◎", _shorten_path(fp) + (f":{offset}" if offset else ""))
+        if name == "Read" and os.path.isfile(fp):
+            _nvim_open(fp, f"+{offset} " if offset else "", nvim_pane, tmux_srv, editor_bin)
 
     elif name == "Edit":
-        fp = inp.get("file_path", "")
+        fp  = inp.get("file_path", "")
         old = inp.get("old_string", "").strip().replace("\n", " ")
-        preview = (f"  {DIM}{old[:40]}{'…' if len(old) > 40 else ''}{RESET}") if old else ""
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {_shorten_path(fp)}{preview}\n")
-        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
-        if nvim_pane and fp and _is_vim:
-            srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
-            line = _find_edit_line(fp, inp.get("old_string", ""))
-            loc  = f"+{line} " if line else ""
-            os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
+        preview = f"  {DIM}{old[:40]}{'…' if len(old) > 40 else ''}{RESET}" if old else ""
+        _entry(TOOLS_EDIT, "✎", _shorten_path(fp) + preview)
+        line = _find_edit_line(fp, inp.get("old_string", ""))
+        _nvim_open(fp, f"+{line} " if line else "", nvim_pane, tmux_srv, editor_bin)
 
     elif name == "Write":
-        fp = inp.get("file_path", "")
-        overwrite = f"  {DIM}(sobrescreve){RESET}" if os.path.isfile(fp) else ""
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_WRITE}◆{RESET}  {_shorten_path(fp)}{overwrite}\n")
-        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
-        if nvim_pane and fp and _is_vim:
-            srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
-            os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {fp}' Enter 2>/dev/null")
+        fp      = inp.get("file_path", "")
+        suffix  = f"  {DIM}(sobrescreve){RESET}" if os.path.isfile(fp) else ""
+        _entry(TOOLS_WRITE, "◆", _shorten_path(fp) + suffix)
+        _nvim_open(fp, "", nvim_pane, tmux_srv, editor_bin)
 
     elif name == "Grep":
+        fp      = inp.get("path", "")
         pattern = inp.get("pattern", "")
-        path    = inp.get("path", "")
-        display = pattern + (f"  {DIM}{_shorten_path(path)}{RESET}" if path else "")
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}⊕{RESET}  {display}\n")
+        _entry(TOOLS_READ, "⊕", pattern + (f"  {DIM}{_shorten_path(fp)}{RESET}" if fp else ""))
 
     elif name in ("WebFetch", "WebSearch"):
         query = inp.get("url", inp.get("query", name))
-        display = query[:90] if len(query) > 90 else query
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_WEB}↓{RESET}  {display}\n")
+        _entry(TOOLS_WEB, "↓", query if len(query) <= _MAX_DISPLAY else query[:_MAX_DISPLAY - 1] + "…")
 
     elif name == "Agent":
-        desc = inp.get("description", name)
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_AGENT_IC}◈{RESET}  {desc}\n")
+        _entry(TOOLS_AGENT_IC, "◈", inp.get("description", name))
 
     else:
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  →  {name}\n")
