@@ -32,6 +32,7 @@ TMUX_CONF="$REPO_DIR/conf/tmux.conf"
 
 cleanup() {
     tmux -L "$SRV" kill-server >/dev/null 2>&1 || true
+    rm -rf "$RUNDIR"
 }
 trap cleanup EXIT
 
