@@ -22,7 +22,7 @@ if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
     shift
 fi
 
-RUNDIR="/tmp/claude-client"
+RUNDIR="/tmp/claude-client-$$"
 mkdir -p "$RUNDIR"
 > "$RUNDIR/thinking"
 > "$RUNDIR/tools"
@@ -38,13 +38,22 @@ trap cleanup EXIT
 COLS=$(tput cols 2>/dev/null || echo 220)
 ROWS=$(tput lines 2>/dev/null || echo 50)
 
+# Editor: detecta antes de criar os panes (CLAUDE_EDITOR_BIN precisa estar definido)
+if command -v nvim >/dev/null 2>&1; then
+    _editor_bin="nvim"
+    _editor_cmd="nvim -c \"lua vim.defer_fn(function() require('nvim-tree.api').tree.open() end, 100)\""
+else
+    _editor_bin="${EDITOR:-nano}"
+    _editor_cmd="$_editor_bin"
+fi
+
 # Pane inicial: coluna esquerda (placeholder — vira nvim depois)
 tmux -L "$SRV" -f "$TMUX_CONF" new-session -d -x "$COLS" -y "$ROWS" -s claude -n main "exec \$SHELL"
 P_LEFT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Coluna direita: chat (40% da largura, altura total)
 tmux -L "$SRV" split-window -h -l "40%" -t "$P_LEFT" \
-    "cd '$PROJ_DIR' && CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
+    "cd '$PROJ_DIR' && CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
 P_CHAT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Tools: base da coluna direita (26% do total — calibrado pelo layout manual)
@@ -212,14 +221,7 @@ CITYEOF
 }
 _paris > "$TOOLS_TTY" 2>/dev/null || true
 
-# Editor no topo da coluna esquerda — nvim com nvim-tree se disponível, senão $EDITOR
-if command -v nvim >/dev/null 2>&1; then
-    _editor_bin="nvim"
-    _editor_cmd="nvim -c \"lua vim.defer_fn(function() require('nvim-tree.api').tree.open() end, 100)\""
-else
-    _editor_bin="${EDITOR:-nano}"
-    _editor_cmd="$_editor_bin"
-fi
+# Editor no topo da coluna esquerda
 tmux -L "$SRV" send-keys -t "$P_LEFT" "cd '$PROJ_DIR' && $_editor_cmd" Enter
 
 tmux -L "$SRV" bind-key q kill-server

@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -6,8 +7,11 @@ from .theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_READ, TOOLS_AGENT_I
 from .gargulas import _gargula_comment
 from .typewriter import log_animated
 
-RUNDIR    = Path("/tmp/claude-client")
+RUNDIR    = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 TOOLS_LOG = RUNDIR / "tools"
+
+_MAX_DISPLAY = 72          # chars de conteúdo antes do wrap no pane (~88 cols - prefixo)
+_last_nvim_open = [0.0]   # timestamp do último :e enviado ao nvim
 
 
 def _ts():
@@ -35,6 +39,18 @@ def _clear_tools_pane():
         pass
 
 
+def _shorten_path(fp, maxlen=55):
+    try:
+        rel = os.path.relpath(fp)
+        if len(rel) <= len(fp):
+            fp = rel
+    except ValueError:
+        pass
+    if len(fp) > maxlen:
+        fp = "…" + fp[-(maxlen - 1):]
+    return fp
+
+
 def _find_edit_line(file_path, old_string):
     if not old_string:
         return None
@@ -56,16 +72,27 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     if name == "Bash":
         desc = inp.get("description", "")
         cmd  = inp.get("command", "").replace("\n", " ")
-        display = desc if desc else cmd[:90]
+        raw  = desc if desc else cmd
+        display = raw if len(raw) <= _MAX_DISPLAY else raw[:_MAX_DISPLAY - 1] + "…"
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_BASH}⚡{RESET}  {display}\n")
 
     elif name in ("Read", "Glob"):
         fp = inp.get("file_path", inp.get("pattern", ""))
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}◎{RESET}  {fp}\n")
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}◎{RESET}  {_shorten_path(fp)}\n")
+        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
+        if name == "Read" and nvim_pane and fp and _is_vim and os.path.isfile(fp):
+            srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
+            offset = inp.get("offset")
+            loc = f"+{offset} " if offset else ""
+            os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
+            gap = 0.3 - (time.time() - _last_nvim_open[0])
+            if gap > 0:
+                time.sleep(gap)
+            _last_nvim_open[0] = time.time()
 
     elif name in ("Edit", "Write"):
         fp = inp.get("file_path", "")
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {fp}\n")
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {_shorten_path(fp)}\n")
         _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
         if nvim_pane and fp and _is_vim:
             srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
@@ -76,7 +103,7 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     elif name == "Grep":
         pattern = inp.get("pattern", "")
         path    = inp.get("path", "")
-        display = pattern + (f"  {DIM}{path}{RESET}" if path else "")
+        display = pattern + (f"  {DIM}{_shorten_path(path)}{RESET}" if path else "")
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}⊕{RESET}  {display}\n")
 
     elif name in ("WebFetch", "WebSearch"):
@@ -115,9 +142,13 @@ def log_tool_result(block):
     if not lines or lines == [""]:
         return
 
-    LIMIT = 12
+    LIMIT    = 12
+    MAX_COLS = 68
     show = lines if len(lines) <= LIMIT else lines[:LIMIT]
     for line in show:
+        line = line.rstrip()
+        if len(line) > MAX_COLS:
+            line = line[:MAX_COLS - 1] + "…"
         _log(TOOLS_LOG, f"  {DIM}{line}{RESET}\n")
     if len(lines) > LIMIT:
         _log(TOOLS_LOG, f"  {DIM}↓ {len(lines) - LIMIT} linhas{RESET}\n")

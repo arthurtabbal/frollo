@@ -25,7 +25,7 @@ from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn
 
-RUNDIR       = Path("/tmp/claude-client")
+RUNDIR       = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 THINKING_LOG = RUNDIR / "thinking"
 TOOLS_LOG    = RUNDIR / "tools"
 

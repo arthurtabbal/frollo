@@ -1,8 +1,9 @@
+import os
 import random
 import time
 from pathlib import Path
 
-SKIP_FLAG = Path("/tmp/claude-client/skip")
+SKIP_FLAG = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client")) / "skip"
 
 
 def _char_delay(char, base, hesitate=True):
