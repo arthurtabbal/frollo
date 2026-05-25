@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, CLEAR
+from .theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_WRITE, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, CLEAR
 from .gargulas import _gargula_comment
 from .typewriter import log_animated
 
@@ -78,11 +78,12 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
 
     elif name in ("Read", "Glob"):
         fp = inp.get("file_path", inp.get("pattern", ""))
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}◎{RESET}  {_shorten_path(fp)}\n")
+        offset = inp.get("offset")
+        fp_display = _shorten_path(fp) + (f":{offset}" if offset else "")
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_READ}◎{RESET}  {fp_display}\n")
         _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
         if name == "Read" and nvim_pane and fp and _is_vim and os.path.isfile(fp):
             srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
-            offset = inp.get("offset")
             loc = f"+{offset} " if offset else ""
             os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
             gap = 0.3 - (time.time() - _last_nvim_open[0])
@@ -90,15 +91,26 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
                 time.sleep(gap)
             _last_nvim_open[0] = time.time()
 
-    elif name in ("Edit", "Write"):
+    elif name == "Edit":
         fp = inp.get("file_path", "")
-        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {_shorten_path(fp)}\n")
+        old = inp.get("old_string", "").strip().replace("\n", " ")
+        preview = (f"  {DIM}{old[:40]}{'…' if len(old) > 40 else ''}{RESET}") if old else ""
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_EDIT}✎{RESET}  {_shorten_path(fp)}{preview}\n")
         _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
         if nvim_pane and fp and _is_vim:
             srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
             line = _find_edit_line(fp, inp.get("old_string", ""))
             loc  = f"+{line} " if line else ""
             os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {loc}{fp}' Enter 2>/dev/null")
+
+    elif name == "Write":
+        fp = inp.get("file_path", "")
+        overwrite = f"  {DIM}(sobrescreve){RESET}" if os.path.isfile(fp) else ""
+        _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {TOOLS_WRITE}◆{RESET}  {_shorten_path(fp)}{overwrite}\n")
+        _is_vim = editor_bin in ("nvim", "vim") or editor_bin.endswith("/nvim") or editor_bin.endswith("/vim")
+        if nvim_pane and fp and _is_vim:
+            srv_flag = f"-L '{tmux_srv}' " if tmux_srv else ""
+            os.system(f"tmux {srv_flag}send-keys -t '{nvim_pane}' ':e {fp}' Enter 2>/dev/null")
 
     elif name == "Grep":
         pattern = inp.get("pattern", "")

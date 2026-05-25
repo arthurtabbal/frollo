@@ -28,6 +28,7 @@ THINKING_FG     = CYAN         # azul pastel: o interior etéreo
 THINKING_TS     = BLUE         # azul marinho: âncora do timestamp
 TOOLS_BASH      = GREEN        # ⚡
 TOOLS_EDIT      = YELLOW       # ✎
+TOOLS_WRITE     = GREEN        # ◆
 TOOLS_READ      = CYAN         # ◎
 TOOLS_AGENT_IC  = PURPLE       # ◈ (ic = ícone, evita conflito com AGENT)
 TOOLS_WEB       = BLUE         # ↓
