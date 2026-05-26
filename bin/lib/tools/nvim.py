@@ -46,9 +46,3 @@ def _grep_to_quickfix(text, nvim_pane, tmux_srv, editor_bin):
     _tmux_send(nvim_pane, tmux_srv, f":cfile {qf} | copen")
 
 
-def _glob_to_scratch(text, nvim_pane, tmux_srv, editor_bin):
-    if not (nvim_pane and text.strip() and _is_vim_editor(editor_bin)):
-        return
-    scratch = Path("/tmp/frollo-glob.txt")
-    scratch.write_text(text.strip() + "\n")
-    _tmux_send(nvim_pane, tmux_srv, f":e {scratch}")

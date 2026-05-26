@@ -5,7 +5,7 @@ from ..gargulas import _gargula_comment
 from ..typewriter import log_animated
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
-from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix, _glob_to_scratch
+from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix
 
 _nvim_ctx: dict = {}   # {nvim_pane, tmux_srv, editor_bin} — atualizado a cada tool call
 _pending:  dict = {}   # tool_use_id → tool name, para rotear resultados
@@ -90,8 +90,6 @@ def log_tool_result(block):
     if not block.get("is_error") and text:
         if name == "Grep":
             _grep_to_quickfix(text, **_nvim_ctx)
-        elif name == "Glob":
-            _glob_to_scratch(text, **_nvim_ctx)
 
     lines = text.split("\n") if text else []
     if not lines:
