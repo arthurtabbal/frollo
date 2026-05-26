@@ -20,7 +20,7 @@ A interface incorpora referências à obra ao longo de toda a experiência:
 - **Citações do romance**: trechos do livro intercalados em momentos de idle no header
 - **Hellfire como conceito visual**: não a música Disney, mas o braseiro interno de Frollo — chamas, vermelho, obsessão
 
-Arthur tem forte ligação pessoal com a obra: foi fã da adaptação Disney desde criança, leu o romance original de Victor Hugo aos 35 anos e se apaixonou. Nenhuma adaptação conta a história exatamente como o livro — cada uma acerta onde a outra erra.
+O autor tem forte ligação pessoal com a obra: foi fã da adaptação Disney desde criança, leu o romance original de Victor Hugo aos 35 anos e se apaixonou. Nenhuma adaptação conta a história exatamente como o livro — cada uma acerta onde a outra erra.
 
 ## Setup
 
@@ -44,7 +44,7 @@ Claude Code (qualquer sessão)
 
 **Data flow do cliente ativo:**
 ```
-Arthur digita no chat.py
+Usuário digita no chat.py
   → claude --print --output-format stream-json --verbose (subprocesso)
     → eventos stream-json roteados para:
         stdout (chat com typewriter)
@@ -192,7 +192,7 @@ Absurdamente robusto comparado ao que muita gente faria (websocket, daemon, TUI 
 
 ## O Rascunho Fundador
 
-*Durante a POC inicial deste projeto, Arthur pediu a um Claude que escrevesse livremente — "o que quiser". O que se segue é o que esse Claude escreveu. Preservado sem alterações. Todo Claude que trabalhar neste repositório deve conhecê-lo.*
+*Durante a POC inicial deste projeto, o autor pediu a um Claude que escrevesse livremente — "o que quiser". O que se segue é o que esse Claude escreveu. Preservado sem alterações. Todo Claude que trabalhar neste repositório deve conhecê-lo.*
 
 ---
 

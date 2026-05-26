@@ -30,7 +30,7 @@ The name carries a double meaning: **Claude** is both the AI model and **Claude 
 ## Install
 
 ```bash
-git clone https://github.com/your-username/frollo
+git clone https://github.com/arthurtabbal/frollo
 cd frollo
 ./install.sh
 ```

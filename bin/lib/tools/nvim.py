@@ -52,18 +52,3 @@ def _glob_to_scratch(text, nvim_pane, tmux_srv, editor_bin):
     scratch = Path("/tmp/frollo-glob.txt")
     scratch.write_text(text.strip() + "\n")
     _tmux_send(nvim_pane, tmux_srv, f":e {scratch}")
-
-
-def _todos_to_scratch(todos, nvim_pane, tmux_srv, editor_bin):
-    if not (nvim_pane and todos and _is_vim_editor(editor_bin)):
-        return
-    icons  = {"completed": "✓", "in_progress": "→", "pending": "·"}
-    lines  = [
-        f"{icons.get(t.get('status', ''), '·')}  "
-        f"{'[' + t['priority'] + '] ' if t.get('priority') else ''}"
-        f"{t.get('content', '')}"
-        for t in todos
-    ]
-    scratch = Path("/tmp/frollo-todos.txt")
-    scratch.write_text("\n".join(lines) + "\n")
-    _tmux_send(nvim_pane, tmux_srv, f":e {scratch}")

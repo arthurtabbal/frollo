@@ -5,7 +5,7 @@ from ..gargulas import _gargula_comment
 from ..typewriter import log_animated
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
-from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix, _glob_to_scratch, _todos_to_scratch
+from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix, _glob_to_scratch
 
 _nvim_ctx: dict = {}   # {nvim_pane, tmux_srv, editor_bin} — atualizado a cada tool call
 _pending:  dict = {}   # tool_use_id → tool name, para rotear resultados
@@ -61,7 +61,6 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
         done    = sum(1 for t in todos if t.get("status") == "completed")
         active  = sum(1 for t in todos if t.get("status") == "in_progress")
         _entry(TOOLS_TODO, "☑", f"{len(todos)} tasks · {active} active · {done} done")
-        _todos_to_scratch(todos, nvim_pane, tmux_srv, editor_bin)
 
     else:
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  →  {name}\n")
