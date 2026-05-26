@@ -100,7 +100,6 @@ def run_turn(client, message, images=None):
     termios.tcsetattr(_fd, termios.TCSADRAIN, _no_echo)
 
     _tool_names      = {}
-    _retry_needed    = False
     start_time       = time.time()
     input_tokens     = 0
     output_tokens    = 0
@@ -308,8 +307,7 @@ def run_turn(client, message, images=None):
                                 or "requires approval" in err_text):
                             tool_name = _tool_names.get(block.get("tool_use_id", ""), "?")
                             _clear_status()
-                            if _handle_permission_ask(tool_name, client.cwd):
-                                _retry_needed = True
+                            _handle_permission_ask(tool_name, client.cwd)
                     log_tool_result(block)
                     _blk_tool = _tool_names.get(block.get("tool_use_id", ""), "")
                     if _blk_tool == "Bash" and not block.get("is_error"):
@@ -403,4 +401,3 @@ def run_turn(client, message, images=None):
         _resize_thinking(client.tmux_srv, "idle")
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
-    return _retry_needed

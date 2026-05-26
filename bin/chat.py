@@ -211,11 +211,7 @@ class ClaudeClient:
                 sys.stdout.write('\n')
                 sys.stdout.flush()
                 images = [pending_image] if pending_image else None
-                retry_msg = user_input
-                retry_imgs = images
-                while run_turn(self, retry_msg, images=retry_imgs):
-                    retry_msg = "(permissão concedida — continue a tarefa anterior)"
-                    retry_imgs = None
+                run_turn(self, user_input, images=images)
             except KeyboardInterrupt:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
