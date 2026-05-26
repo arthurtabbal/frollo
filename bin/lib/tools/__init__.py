@@ -5,19 +5,12 @@ from ..gargulas import _gargula_comment
 from ..typewriter import log_animated
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
-from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix
-
-_nvim_ctx: dict = {}   # {nvim_pane, tmux_srv, editor_bin} — atualizado a cada tool call
-_pending:  dict = {}   # tool_use_id → tool name, para rotear resultados
-
+from .nvim import _nvim_open, _find_edit_line
 
 def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
-    global _nvim_ctx
-    _nvim_ctx = {"nvim_pane": nvim_pane, "tmux_srv": tmux_srv, "editor_bin": editor_bin}
     _clear_tools_pane()
     name = block.get("name", "")
     inp  = block.get("input", {})
-    _pending[block.get("id", "")] = name
 
     if name == "Bash":
         raw = inp.get("description") or inp.get("command", "").replace("\n", " ")
@@ -75,8 +68,6 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
 
 
 def log_tool_result(block):
-    name = _pending.pop(block.get("tool_use_id", ""), "")
-
     content = block.get("content", "")
     text = ""
     if isinstance(content, list):
@@ -86,10 +77,6 @@ def log_tool_result(block):
                 break
     elif isinstance(content, str):
         text = content.strip()
-
-    if not block.get("is_error") and text:
-        if name == "Grep":
-            _grep_to_quickfix(text, **_nvim_ctx)
 
     lines = text.split("\n") if text else []
     if not lines:

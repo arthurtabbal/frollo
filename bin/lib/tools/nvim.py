@@ -38,11 +38,4 @@ def _nvim_open(fp, loc, nvim_pane, tmux_srv, editor_bin):
     _last_nvim_open = time.time()
 
 
-def _grep_to_quickfix(text, nvim_pane, tmux_srv, editor_bin):
-    if not (nvim_pane and text.strip() and _is_vim_editor(editor_bin)):
-        return
-    qf = Path("/tmp/frollo-grep.qf")
-    qf.write_text(text.strip() + "\n")
-    _tmux_send(nvim_pane, tmux_srv, f":cfile {qf} | copen")
-
 
