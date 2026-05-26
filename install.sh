@@ -24,6 +24,33 @@ if [ ${#missing[@]} -gt 0 ]; then
     exit 1
 fi
 
+# Version checks — compare X.Y strings via sort -V
+_ver_ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+# Python >= 3.10
+if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+    _pyver=$(python3 -c "import sys; print('%d.%d' % sys.version_info[:2])")
+    echo "✗ Python 3.10+ required (found $_pyver)"
+    echo "  Ubuntu 22.04+, Debian 12+ and most modern distros ship 3.10 or newer."
+    exit 1
+fi
+
+# tmux >= 2.6  (select-pane -T and pane-border-status)
+_tmuxver=$(tmux -V | awk '{print $2}' | tr -d 'a-z')
+if ! _ver_ge "$_tmuxver" "2.6"; then
+    echo "✗ tmux 2.6+ required (found $_tmuxver)"
+    echo "  Ubuntu 20.04+ ships 3.0a or newer."
+    exit 1
+fi
+
+# jq >= 1.6  (--unbuffered, --arg)
+_jqver=$(jq --version 2>/dev/null | tr -d 'jq-')
+if ! _ver_ge "$_jqver" "1.6"; then
+    echo "✗ jq 1.6+ required (found $_jqver)"
+    echo "  Ubuntu 20.04+ ships 1.6 or newer."
+    exit 1
+fi
+
 # Install hook script
 mkdir -p "$HOME/.claude/hooks"
 cp "$REPO_DIR/hooks/log.sh" "$HOOK_SCRIPT"
@@ -68,22 +95,27 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo '    export PATH="$HOME/.local/bin:$PATH"'
 fi
 
-# Optional: nvim + NvChad config
+# Optional: nvim + NvChad config (requires nvim >= 0.10)
 if command -v nvim >/dev/null 2>&1; then
+    _nvimver=$(nvim --version 2>/dev/null | awk 'NR==1{gsub(/[^0-9.]/,"",$0); print $0}')
     echo ""
     printf "Install NvChad config for nvim? This will back up any existing ~/.config/nvim. [y/N] "
     read -r _ans
     if [[ "$_ans" =~ ^[Yy]$ ]]; then
-        if [ -d "$HOME/.config/nvim" ]; then
-            _bak="$HOME/.config/nvim.bak.$(date +%Y%m%d%H%M%S)"
-            mv "$HOME/.config/nvim" "$_bak"
-            echo "✓ Backup saved at $_bak"
+        if ! _ver_ge "$_nvimver" "0.10"; then
+            echo "✗ NvChad requires nvim 0.10+ (found $_nvimver) — skipping"
+        else
+            if [ -d "$HOME/.config/nvim" ]; then
+                _bak="$HOME/.config/nvim.bak.$(date +%Y%m%d%H%M%S)"
+                mv "$HOME/.config/nvim" "$_bak"
+                echo "✓ Backup saved at $_bak"
+            fi
+            cp -r "$REPO_DIR/conf/nvim" "$HOME/.config/nvim"
+            echo "✓ NvChad config installed at ~/.config/nvim"
+            echo "  Installing plugins (isso pode demorar um minuto)..."
+            nvim --headless "+Lazy! sync" +qa 2>&1 | grep -v "^$" || true
+            echo "✓ Plugins instalados"
         fi
-        cp -r "$REPO_DIR/conf/nvim" "$HOME/.config/nvim"
-        echo "✓ NvChad config installed at ~/.config/nvim"
-        echo "  Installing plugins (isso pode demorar um minuto)..."
-        nvim --headless "+Lazy! sync" +qa 2>&1 | grep -v "^$" || true
-        echo "✓ Plugins instalados"
     fi
 fi
 

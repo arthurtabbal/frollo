@@ -32,6 +32,18 @@ O autor tem forte ligação pessoal com a obra: foi fã da adaptação Disney de
 
 `install.sh` merges hooks into `~/.claude/settings.json` usando `jq -s '.[0] * .[1]'` e faz backup do original.
 
+### Dependências e versões mínimas
+
+| Ferramenta | Mínimo | Motivo |
+|---|---|---|
+| Python | 3.10 | Ubuntu 22.04 LTS default; versões anteriores EOL |
+| tmux | 2.6 | `select-pane -T` (títulos de pane) + `pane-border-status` |
+| jq | 1.6 | `--unbuffered` no observer; Ubuntu 20.04+ ship 1.6 |
+| nvim | 0.10 | Opcional — exigido apenas pelo NvChad config |
+| claude | qualquer | Claude Code CLI |
+
+O `install.sh` verifica Python, tmux e jq automaticamente e aborta com mensagem clara se abaixo do mínimo. A checagem do nvim só ocorre se o usuário optar por instalar o NvChad config.
+
 ## Architecture
 
 **Data flow do observer passivo:**
@@ -63,6 +75,7 @@ Usuário digita no chat.py
 - `tail -n 0 -f` começa do fim do arquivo, nunca repete eventos de sessões anteriores.
 - O loop principal do client usa `select` com timeout de 150ms — garante animação do spinner mesmo em silêncio entre eventos do subprocesso.
 - **Tools pane é limpo via PTY direto** (`/tmp/claude-client/tools_tty`, salvo pelo `frollo.sh`). Escrever `\033[2J\033[H` no arquivo não é confiável via `tail -f`; escrever no PTY funciona de forma determinística. O arquivo de tools é truncado a cada turno.
+- **Stdlib only — sem dependências pip.** Todo o código Python usa exclusivamente a biblioteca padrão. Esta é uma regra de segurança: pip é o principal vetor de supply chain attacks em Python. Qualquer feature que pareça exigir uma dep externa deve ser implementada com stdlib ou reconsiderada. `requirements.txt` não existe e não deve ser criado.
 
 ## Hook event schema (campos relevantes)
 
