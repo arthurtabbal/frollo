@@ -87,6 +87,15 @@ Stop:        hook_event_name, last_assistant_message, cwd
 
 `tool_response` (não `tool_output`) é o nome correto para PostToolUse.
 
+## Testes
+
+```bash
+python3 -m pytest tests/          # testes unitários Python (79 testes)
+bash tests/test_install_sh.sh     # testes unitários do install.sh (parsers de versão)
+```
+
+O `install.sh` executa um smoke test automático ao final verificando que os artefatos críticos estão no lugar: hook executável, symlink `frollo`, hooks registrados no `settings.json` e imports Python funcionando.
+
 ## Módulos (bin/)
 
 | Arquivo | Linhas | Responsabilidade |

@@ -119,6 +119,28 @@ if command -v nvim >/dev/null 2>&1; then
     fi
 fi
 
+# Smoke test — verify key artifacts are in place
+echo ""
+echo "── Smoke test ───────────────────────────────────────"
+_smoke_ok=true
+_check() {
+    if eval "$2" >/dev/null 2>&1; then
+        printf "  ✓ %s\n" "$1"
+    else
+        printf "  ✗ %s\n" "$1"; _smoke_ok=false
+    fi
+}
+
+_check "hook script executable"        "test -x '$HOOK_SCRIPT'"
+_check "frollo symlink installed"       "test -L '$HOME/.local/bin/frollo'"
+_check "hooks registered in settings"  "jq -e '.hooks.PreToolUse' '$SETTINGS'"
+_check "Python imports ok"             "python3 -c \"import sys; sys.path.insert(0,'$REPO_DIR/bin'); import chat\""
+
+if ! $_smoke_ok; then
+    echo ""
+    echo "⚠  Some checks failed — installation may be incomplete."
+fi
+
 echo ""
 echo "Usage:"
 echo "  frollo                        # open in current directory"
