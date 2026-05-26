@@ -1,17 +1,23 @@
 import os
 
-from ..theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_WRITE, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB
+from ..theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_WRITE, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, TOOLS_TODO
 from ..gargulas import _gargula_comment
 from ..typewriter import log_animated
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
-from .nvim import _nvim_open, _find_edit_line
+from .nvim import _nvim_open, _find_edit_line, _grep_to_quickfix, _glob_to_scratch, _todos_to_scratch
+
+_nvim_ctx: dict = {}   # {nvim_pane, tmux_srv, editor_bin} — atualizado a cada tool call
+_pending:  dict = {}   # tool_use_id → tool name, para rotear resultados
 
 
 def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
+    global _nvim_ctx
+    _nvim_ctx = {"nvim_pane": nvim_pane, "tmux_srv": tmux_srv, "editor_bin": editor_bin}
     _clear_tools_pane()
     name = block.get("name", "")
     inp  = block.get("input", {})
+    _pending[block.get("id", "")] = name
 
     if name == "Bash":
         raw = inp.get("description") or inp.get("command", "").replace("\n", " ")
@@ -50,6 +56,13 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     elif name == "Agent":
         _entry(TOOLS_AGENT_IC, "◈", inp.get("description", name))
 
+    elif name == "TodoWrite":
+        todos   = inp.get("todos", [])
+        done    = sum(1 for t in todos if t.get("status") == "completed")
+        active  = sum(1 for t in todos if t.get("status") == "in_progress")
+        _entry(TOOLS_TODO, "☑", f"{len(todos)} tasks · {active} active · {done} done")
+        _todos_to_scratch(todos, nvim_pane, tmux_srv, editor_bin)
+
     else:
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  →  {name}\n")
 
@@ -63,18 +76,26 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
 
 
 def log_tool_result(block):
-    content = block.get("content", "")
-    lines = []
+    name = _pending.pop(block.get("tool_use_id", ""), "")
 
+    content = block.get("content", "")
+    text = ""
     if isinstance(content, list):
         for item in content:
             if item.get("type") == "text":
-                lines = item["text"].strip().split("\n")
+                text = item["text"].strip()
                 break
     elif isinstance(content, str):
-        lines = content.strip().split("\n")
+        text = content.strip()
 
-    if not lines or lines == [""]:
+    if not block.get("is_error") and text:
+        if name == "Grep":
+            _grep_to_quickfix(text, **_nvim_ctx)
+        elif name == "Glob":
+            _glob_to_scratch(text, **_nvim_ctx)
+
+    lines = text.split("\n") if text else []
+    if not lines:
         return
 
     LIMIT    = 12

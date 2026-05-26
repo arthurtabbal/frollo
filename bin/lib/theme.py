@@ -32,6 +32,7 @@ TOOLS_WRITE     = GREEN        # ◆
 TOOLS_READ      = CYAN         # ◎
 TOOLS_AGENT_IC  = PURPLE       # ◈ (ic = ícone, evita conflito com AGENT)
 TOOLS_WEB       = BLUE         # ↓
+TOOLS_TODO      = WHITE        # ☑
 HEADER_TITLE    = CYAN         # "Claude Frollo Observer"
 HEADER_STONE    = f"{E}[38;5;241m"  # pedra clara — catedral
 HEADER_DARK     = f"{E}[38;5;238m"  # pedra escura — sombra
@@ -141,6 +142,6 @@ def _md(text):
     text = re.sub(r'\*\*([^*\n]+)\*\*',          B       + r'\1' + R, text)
     text = re.sub(r'__([^_\n]+)__',              B       + r'\1' + R, text)
     text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', I       + r'\1' + R, text)
-    text = re.sub(r'(?<!_)_([^_\n]+)_(?!_)',     I       + r'\1' + R, text)
+    text = re.sub(r'(?<!\w)_([^_\n]+)_(?!\w)',     I       + r'\1' + R, text)
     text = re.sub(r'^#{1,3} (.+)$',              B       + r'\1' + R, text, flags=re.MULTILINE)
     return text

@@ -265,6 +265,9 @@ def run_turn(client, message, images=None):
                     chunk = delta.get("text", "")
                     client._last_response_text += chunk
                     if chunk.count("```") % 2 == 1:
+                        remainder = md_buf.flush()
+                        if remainder:
+                            _typewrite(CHAT_FG + remainder + RESET)
                         in_code_block = not in_code_block
                     rendered = chunk if in_code_block else md_buf.feed(chunk)
                     if rendered:
