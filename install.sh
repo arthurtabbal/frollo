@@ -68,6 +68,25 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo '    export PATH="$HOME/.local/bin:$PATH"'
 fi
 
+# Optional: nvim + NvChad config
+if command -v nvim >/dev/null 2>&1; then
+    echo ""
+    printf "Install NvChad config for nvim? This will back up any existing ~/.config/nvim. [y/N] "
+    read -r _ans
+    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+        if [ -d "$HOME/.config/nvim" ]; then
+            _bak="$HOME/.config/nvim.bak.$(date +%Y%m%d%H%M%S)"
+            mv "$HOME/.config/nvim" "$_bak"
+            echo "✓ Backup saved at $_bak"
+        fi
+        cp -r "$REPO_DIR/conf/nvim" "$HOME/.config/nvim"
+        echo "✓ NvChad config installed at ~/.config/nvim"
+        echo "  Installing plugins (isso pode demorar um minuto)..."
+        nvim --headless "+Lazy! sync" +qa 2>&1 | grep -v "^$" || true
+        echo "✓ Plugins instalados"
+    fi
+fi
+
 echo ""
 echo "Usage:"
 echo "  frollo                        # open in current directory"
