@@ -262,6 +262,8 @@ def run_turn(client, message, images=None):
                     _show_status()
 
                 elif dtype == "text_delta":
+                    if _retry_needed:
+                        continue
                     chunk = delta.get("text", "")
                     client._last_response_text += chunk
                     if chunk.count("```") % 2 == 1:

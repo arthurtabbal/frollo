@@ -31,8 +31,9 @@ def _handle_permission_ask(tool_name, cwd):
     sys.stdout.flush()
     _g_prefix, _g_fala = _gargula_comment("permission", force=True)
     if _g_prefix:
-        _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
         sys.stdout.write("\n")
+        _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+        sys.stdout.write("\n\n")
         sys.stdout.flush()
     sys.stdout.write(f"{DIM}O projeto requer aprovação explícita para {tool_name}.\n")
     sys.stdout.write(f"Adicionar {tool_name} ao allow do projeto (.claude/settings.local.json)? [y/n]{RESET}  ")
