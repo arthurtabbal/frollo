@@ -42,7 +42,7 @@ ROWS=$(tput lines 2>/dev/null || echo 50)
 # Editor: detecta antes de criar os panes (CLAUDE_EDITOR_BIN precisa estar definido)
 if command -v nvim >/dev/null 2>&1; then
     _editor_bin="nvim"
-    _editor_cmd="nvim -c \"lua vim.defer_fn(function() require('nvim-tree.api').tree.open() end, 100)\""
+    _editor_cmd="nvim -c \"lua vim.defer_fn(function() local ok, api = pcall(require, 'nvim-tree.api'); if ok then api.tree.open() end end, 100)\""
 else
     _editor_bin="${EDITOR:-nano}"
     _editor_cmd="$_editor_bin"
