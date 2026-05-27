@@ -3,6 +3,7 @@ import os
 from ..theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_WRITE, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, TOOLS_TODO
 from ..gargulas import _gargula_comment
 from ..typewriter import log_animated
+from .. import config
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
 from .nvim import _nvim_open, _find_edit_line
@@ -58,13 +59,14 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
     else:
         _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  →  {name}\n")
 
-    tool_key = name if name in ("Bash", "Edit", "Write", "Read") else None
-    prefix, fala = _gargula_comment(tool_key)
-    if prefix:
-        _log(TOOLS_LOG, '\n')
-        _log(TOOLS_LOG, prefix)
-        log_animated(TOOLS_LOG, fala)
-        _log(TOOLS_LOG, '\n')
+    if config.load().get("gargoyles", True):
+        tool_key = name if name in ("Bash", "Edit", "Write", "Read") else None
+        prefix, fala = _gargula_comment(tool_key)
+        if prefix:
+            _log(TOOLS_LOG, '\n')
+            _log(TOOLS_LOG, prefix)
+            log_animated(TOOLS_LOG, fala)
+            _log(TOOLS_LOG, '\n')
 
 
 def log_tool_result(block):

@@ -23,10 +23,11 @@ from .panes import (
     THINKING_LOG, THINKING_PANE, STATS_PANE, TOOLS_PANE,
     _window_height, _resize_thinking,
 )
-from .permissions import _handle_permission, _handle_permission_ask
+from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request
 from .stats import _model_price, _fmt_cost
 
 from ..tools import RUNDIR
+from .. import config
 
 
 def run_turn(client, message, images=None):
@@ -99,6 +100,8 @@ def run_turn(client, message, images=None):
     _no_echo[3] &= ~termios.ECHO
     termios.tcsetattr(_fd, termios.TCSADRAIN, _no_echo)
 
+    cfg = config.load()
+
     _tool_names      = {}
     start_time       = time.time()
     input_tokens     = 0
@@ -117,6 +120,8 @@ def run_turn(client, message, images=None):
     thinking_count   = 0
     thinking_col     = 0
     spinner_shown    = False
+    _suppress_perm_text = False
+    _perm_approved   = False
     rate_limited     = False
     rate_limit_ts    = 0.0
     rate_limit_retry = 0
@@ -263,14 +268,25 @@ def run_turn(client, message, images=None):
                 elif dtype == "text_delta":
                     chunk = delta.get("text", "")
                     client._last_response_text += chunk
-                    if chunk.count("```") % 2 == 1:
-                        remainder = md_buf.flush()
-                        if remainder:
-                            _typewrite(CHAT_FG + remainder + RESET)
-                        in_code_block = not in_code_block
-                    rendered = chunk if in_code_block else md_buf.feed(chunk)
-                    if rendered:
-                        _typewrite(CHAT_FG + rendered + RESET)
+                    if _suppress_perm_text:
+                        pass
+                    else:
+                        if chunk.count("```") % 2 == 1:
+                            remainder = md_buf.flush()
+                            if remainder:
+                                if cfg.get("typewriter", True):
+                                    _typewrite(CHAT_FG + remainder + RESET)
+                                else:
+                                    sys.stdout.write(CHAT_FG + remainder + RESET)
+                                    sys.stdout.flush()
+                            in_code_block = not in_code_block
+                        rendered = chunk if in_code_block else md_buf.feed(chunk)
+                        if rendered:
+                            if cfg.get("typewriter", True):
+                                _typewrite(CHAT_FG + rendered + RESET)
+                            else:
+                                sys.stdout.write(CHAT_FG + rendered + RESET)
+                                sys.stdout.flush()
 
             elif et == "content_block_stop":
                 if current_block == "thinking":
@@ -279,7 +295,11 @@ def run_turn(client, message, images=None):
                     client._streaming_text = False
                     remainder = md_buf.flush()
                     if remainder:
-                        _typewrite(CHAT_FG + remainder + RESET)
+                        if cfg.get("typewriter", True):
+                            _typewrite(CHAT_FG + remainder + RESET)
+                        else:
+                            sys.stdout.write(CHAT_FG + remainder + RESET)
+                            sys.stdout.flush()
                     sys.stdout.write(RESET)
                     if col_is_mid_line():
                         sys.stdout.write("\n")
@@ -307,7 +327,10 @@ def run_turn(client, message, images=None):
                                 or "requires approval" in err_text):
                             tool_name = _tool_names.get(block.get("tool_use_id", ""), "?")
                             _clear_status()
-                            _handle_permission_ask(tool_name, client.cwd)
+                            if _handle_permission_ask(tool_name, client.cwd):
+                                _perm_approved = True
+                                client._retry_context = f"({tool_name} aprovado — prossiga)"
+                            _suppress_perm_text = True
                     log_tool_result(block)
                     _blk_tool = _tool_names.get(block.get("tool_use_id", ""), "")
                     if _blk_tool == "Bash" and not block.get("is_error"):
@@ -317,14 +340,20 @@ def run_turn(client, message, images=None):
                             if isinstance(_blk_content, list) else str(_blk_content)
                         )
                         if re.search(r'exit code[:\s]+([1-9]\d*)', _blk_text, re.IGNORECASE):
-                            _g_prefix, _g_fala = _gargula_comment("bash_error", force=True)
-                            if _g_prefix:
-                                _log(TOOLS_LOG, '\n')
-                                _log(TOOLS_LOG, _g_prefix)
-                                log_animated(TOOLS_LOG, _g_fala)
-                                _log(TOOLS_LOG, '\n')
+                            if cfg.get("gargoyles", True):
+                                _g_prefix, _g_fala = _gargula_comment("bash_error", force=True)
+                                if _g_prefix:
+                                    _log(TOOLS_LOG, '\n')
+                                    _log(TOOLS_LOG, _g_prefix)
+                                    log_animated(TOOLS_LOG, _g_fala)
+                                    _log(TOOLS_LOG, '\n')
+
+        elif etype == "control_request":
+            _clear_status()
+            _handle_control_request(event, proc, client.cwd)
 
         elif etype == "permission_request":
+            _clear_status()
             approved = _handle_permission(event, proc)
             if not approved:
                 proc.stdin.write("n\n")
@@ -360,11 +389,12 @@ def run_turn(client, message, images=None):
               else rate_limit_msg or "rate limit atingido — tente novamente mais tarde"
         sys.stdout.write(f"\n{YELLOW}⏳  {msg}{RESET}\n")
         sys.stdout.flush()
-        _g_prefix, _g_fala = _gargula_comment("rate_limit", force=True)
-        if _g_prefix:
-            _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+        if cfg.get("gargoyles", True):
+            _g_prefix, _g_fala = _gargula_comment("rate_limit", force=True)
+            if _g_prefix:
+                _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+                sys.stdout.write("\n")
+                sys.stdout.flush()
 
     elapsed = time.time() - start_time
     client._total_input_tokens  = getattr(client, '_total_input_tokens',  0) + input_tokens
@@ -401,3 +431,4 @@ def run_turn(client, message, images=None):
         _resize_thinking(client.tmux_srv, "idle")
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
+    return _perm_approved

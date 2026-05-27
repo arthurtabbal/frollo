@@ -27,6 +27,13 @@ mkdir -p "$RUNDIR"
 > "$RUNDIR/thinking"
 > "$RUNDIR/tools"
 
+_FROLLO_CONFIG="$HOME/.config/frollo/config.json"
+_show_stats=true
+if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
+    _stats_val=$(jq -r '.stats_pane // true' "$_FROLLO_CONFIG" 2>/dev/null)
+    [[ "$_stats_val" == "false" ]] && _show_stats=false
+fi
+
 SRV="claude-$$"       # servidor tmux efêmero único por invocação
 TMUX_CONF="$REPO_DIR/conf/tmux.conf"
 
@@ -63,11 +70,13 @@ tmux -L "$SRV" split-window -v -l "26%" -t "$P_CHAT" \
 P_TOOLS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 tmux -L "$SRV" display-message -t "$P_TOOLS" -p "#{pane_tty}" > "$RUNDIR/tools_tty"
 
-# Stats: exatamente 2 linhas, entre chat e tools
-tmux -L "$SRV" split-window -v -l 2 -t "$P_CHAT" \
-    "stty -echo; tail -n 0 -f /dev/null"
-P_STATS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
-tmux -L "$SRV" display-message -t "$P_STATS" -p "#{pane_tty}" > "$RUNDIR/stats_tty"
+# Stats: exatamente 2 linhas, entre chat e tools (omitido se desativado na config)
+if [[ "$_show_stats" == "true" ]]; then
+    tmux -L "$SRV" split-window -v -l 2 -t "$P_CHAT" \
+        "stty -echo; tail -n 0 -f /dev/null"
+    P_STATS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
+    tmux -L "$SRV" display-message -t "$P_STATS" -p "#{pane_tty}" > "$RUNDIR/stats_tty"
+fi
 
 # Thinking: tamanho idle desde o início (mesmo cálculo do runner.py)
 ROWS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{window_height}" 2>/dev/null || tput lines)
@@ -80,7 +89,7 @@ tmux -L "$SRV" display-message -t "$P_THINKING" -p "#{pane_tty}" > "$RUNDIR/thin
 echo "$P_THINKING" > "$RUNDIR/thinking_pane"
 echo "$P_CHAT"     > "$RUNDIR/chat_pane"
 echo "$P_TOOLS"    > "$RUNDIR/tools_pane"
-echo "$P_STATS"    > "$RUNDIR/stats_pane"
+[[ "$_show_stats" == "true" ]] && echo "$P_STATS" > "$RUNDIR/stats_pane"
 
 # Coluna esquerda: terminal na base (26% — alinhado com tools)
 tmux -L "$SRV" split-window -v -l "26%" -t "$P_LEFT" \
@@ -92,7 +101,7 @@ tmux -L "$SRV" select-pane -t "$P_LEFT"     -T "◈ editor"
 tmux -L "$SRV" select-pane -t "$P_CHAT"     -T "▲ chat"
 tmux -L "$SRV" select-pane -t "$P_THINKING" -T "◎ thinking"
 tmux -L "$SRV" select-pane -t "$P_TOOLS"    -T "⚡ tools"
-tmux -L "$SRV" select-pane -t "$P_STATS"    -T "〰 stats"
+[[ "$_show_stats" == "true" ]] && tmux -L "$SRV" select-pane -t "$P_STATS" -T "〰 stats"
 tmux -L "$SRV" select-pane -t "$P_TERMINAL" -T "$ terminal"
 
 # Arte ASCII inicial — céu noturno (thinking) e Paris urbana (tools)
@@ -107,7 +116,7 @@ _CB=$'\e[38;5;236m'     # calçada
 
 THINKING_TTY=$(cat "$RUNDIR/thinking_tty")
 TOOLS_TTY=$(cat "$RUNDIR/tools_tty")
-STATS_TTY=$(cat "$RUNDIR/stats_tty")
+[[ "$_show_stats" == "true" ]] && STATS_TTY=$(cat "$RUNDIR/stats_tty")
 
 # Céu noturno — colorização do sky.txt por tipo de caractere
 _sky() {
@@ -176,7 +185,7 @@ _river() {
    ~ ~~~~~~~~ ~ ~ ~~ ~ ~ ~ ~ ~~~ \___\    ~~ ~~  ~~ ~ ~~ ~ ~~~~ ~ ~~
 RIVEREOF
 }
-{ printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
+[[ "$_show_stats" == "true" ]] && { printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
 
 # Paris urbana — cores noturnas, janelas com padrão acesa/apagada
 _paris() {

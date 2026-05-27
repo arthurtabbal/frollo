@@ -24,6 +24,8 @@ from lib.theme import (
 from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn
+from lib import config as _config
+from lib.configure import run_configure
 
 RUNDIR       = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 THINKING_LOG = RUNDIR / "thinking"
@@ -211,7 +213,9 @@ class ClaudeClient:
                 sys.stdout.write('\n')
                 sys.stdout.flush()
                 images = [pending_image] if pending_image else None
-                run_turn(self, user_input, images=images)
+                while run_turn(self, user_input, images=images):
+                    user_input = getattr(self, '_retry_context', '.')
+                    images = None
             except KeyboardInterrupt:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
@@ -244,6 +248,8 @@ if __name__ == "__main__":
         p = argparse.ArgumentParser(description="Claude multi-pane client")
         p.add_argument("--resume", "-r", nargs="?", const="", metavar="SESSION_ID",
                        help="retoma conversa: sem ID abre picker, com ID retoma direto")
+        p.add_argument("--configure", action="store_true",
+                       help="reconfigura preferências (typewriter, gárgulas, stats)")
         args = p.parse_args()
 
         resume_id = None
@@ -252,6 +258,10 @@ if __name__ == "__main__":
                 resume_id = args.resume
             else:
                 resume_id = pick_session(os.getcwd()) or ""
+
+        _first_run = _config.is_first_run()
+        if args.configure or _first_run:
+            run_configure(first_run=_first_run)
 
         ClaudeClient(resume_id=resume_id).chat()
     except (KeyboardInterrupt, EOFError):
