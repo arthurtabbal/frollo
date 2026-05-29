@@ -225,6 +225,8 @@ def run_turn(client, message, images=None):
                 current_block = block.get("type")
                 if current_block == "thinking":
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
+                    _resize_thinking(client.tmux_srv, _max_think_lines)
+                    thinking_lines = _max_think_lines
                 elif current_block == "text":
                     _clear_status()
                     if thinking_count > 0:
@@ -246,13 +248,9 @@ def run_turn(client, message, images=None):
                     chunk_t = delta.get("thinking", "")
 
                     def _on_newline():
-                        nonlocal thinking_count, thinking_col, thinking_lines
+                        nonlocal thinking_count, thinking_col
                         thinking_count += 1
                         thinking_col    = 0
-                        desired = min(thinking_count + 3, _max_think_lines)
-                        if desired > thinking_lines:
-                            _resize_thinking(client.tmux_srv, desired)
-                            thinking_lines = desired
 
                     for ch in chunk_t:
                         if ch == "\n":

@@ -30,8 +30,9 @@ mkdir -p "$RUNDIR"
 _FROLLO_CONFIG="$HOME/.config/frollo/config.json"
 _show_stats=true
 if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
-    _stats_val=$(jq -r '.stats_pane // true' "$_FROLLO_CONFIG" 2>/dev/null)
-    [[ "$_stats_val" == "false" ]] && _show_stats=false
+    if jq -e '.stats_pane == false' "$_FROLLO_CONFIG" >/dev/null 2>&1; then
+        _show_stats=false
+    fi
 fi
 
 SRV="claude-$$"       # servidor tmux efêmero único por invocação
