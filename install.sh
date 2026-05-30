@@ -7,21 +7,46 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK_SCRIPT="$HOME/.claude/hooks/log.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
-# Dependency check
-missing=()
-command -v jq      >/dev/null 2>&1 || missing+=("jq")
-command -v tmux    >/dev/null 2>&1 || missing+=("tmux")
-command -v python3 >/dev/null 2>&1 || missing+=("python3")
-command -v claude  >/dev/null 2>&1 || missing+=("claude  (Claude Code — https://claude.ai/code)")
+# ── apt dependencies (jq, tmux, python3) ─────────────────────────────────────
+apt_missing=()
+command -v jq      >/dev/null 2>&1 || apt_missing+=("jq")
+command -v tmux    >/dev/null 2>&1 || apt_missing+=("tmux")
+command -v python3 >/dev/null 2>&1 || apt_missing+=("python3")
 
-if [ ${#missing[@]} -gt 0 ]; then
-    echo "✗ Missing dependencies:"
-    for dep in "${missing[@]}"; do
-        printf "    %s\n" "$dep"
-    done
+if [ ${#apt_missing[@]} -gt 0 ]; then
+    echo "Dependências ausentes: ${apt_missing[*]}"
+    printf "Instalar via apt? [Y/n] "
+    read -r _ans
+    if [[ "$_ans" =~ ^[Nn]$ ]]; then
+        echo "Instalação cancelada."
+        exit 1
+    fi
+    sudo apt-get install -y "${apt_missing[@]}"
+fi
+
+# ── nvim (necessário para o layout frollo.sh) ─────────────────────────────────
+if ! command -v nvim >/dev/null 2>&1; then
     echo ""
-    echo "Install the above and re-run ./install.sh"
-    exit 1
+    echo "nvim não encontrado — necessário para o layout completo (frollo.sh)."
+    printf "Instalar via snap? [Y/n] "
+    read -r _ans
+    if [[ ! "$_ans" =~ ^[Nn]$ ]]; then
+        sudo snap install nvim --classic
+    else
+        echo "⚠  Continuando sem nvim — o layout frollo.sh não estará disponível."
+    fi
+fi
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+if ! command -v claude >/dev/null 2>&1; then
+    echo ""
+    echo "  Claude Code não está instalado — isso não é um problema do Frollo."
+    echo "  O Frollo é uma camada de observabilidade para o Claude Code, não um substituto."
+    echo "  Instale o Claude Code em https://claude.ai/code e rode ./install.sh novamente."
+    echo ""
+    echo "  Os hooks do Frollo serão instalados assim mesmo e estarão prontos quando"
+    echo "  o Claude Code for instalado."
+    echo ""
 fi
 
 # Version checks — compare X.Y strings via sort -V
