@@ -1,6 +1,9 @@
 """Testes para run_turn — comportamento com dependências ausentes."""
 import io
+import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from lib.runner import run_turn
+from lib.theme import THINKING_FG
 
 
 @pytest.fixture()
@@ -37,3 +41,103 @@ class TestClaudeNaoEncontrado:
         out = capsys.readouterr().out
         assert "claude" in out.lower()
         assert "npm" in out or "não encontrado" in out
+
+
+class _FakeStdout:
+    """stdout de subprocesso falso: serve linhas pré-definidas, depois EOF."""
+    def __init__(self, lines):
+        self._it = iter(lines)
+
+    def readline(self):
+        return next(self._it, "")
+
+
+def _se(event):
+    return json.dumps({"type": "stream_event", "event": event})
+
+
+def _run_stream(fake_client, lines):
+    """Roda run_turn com um stream fixo, capturando o que iria pro pane de thinking.
+
+    Retorna (chamadas_de__log, chamadas_de_log_animated). Cada item é o texto escrito.
+    """
+    proc = MagicMock()
+    proc.stdout = _FakeStdout([l + "\n" for l in lines])
+    proc.wait.return_value = 0
+
+    # totais numéricos reais (MagicMock ignora o default do getattr)
+    fake_client._total_input_tokens = 0
+    fake_client._total_output_tokens = 0
+    fake_client._total_elapsed = 0.0
+    fake_client._total_cost = 0.0
+
+    log_calls, anim_calls = [], []
+
+    rundir = Path(tempfile.mkdtemp())  # sem stats_tty → pula o bloco de stats
+    devnull = open(os.devnull, "r")
+    try:
+        with patch("lib.runner.subprocess.Popen", return_value=proc), \
+             patch("lib.runner.RUNDIR", rundir), \
+             patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
+             patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+             patch("lib.runner.termios.tcsetattr"), \
+             patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+             patch("lib.runner._log", side_effect=lambda path, text: log_calls.append(text)), \
+             patch("lib.runner.log_animated", side_effect=lambda path, text, **kw: anim_calls.append(text)), \
+             patch.object(sys, "stdin", devnull):
+            run_turn(fake_client, "oi")
+    finally:
+        devnull.close()
+    return log_calls, anim_calls
+
+
+# Streams reais capturados de `claude --output-format stream-json` (maio 2026):
+# Sonnet expõe o thinking via thinking_delta; Opus 4.8 o redige (só signature_delta).
+
+_OPUS_REDIGIDO = [
+    _se({"type": "message_start", "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 1}}}),
+    _se({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+    _se({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc"}}),
+    _se({"type": "content_block_stop", "index": 0}),
+    _se({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}),
+    _se({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Nope, 51 = 3*17."}}),
+    _se({"type": "content_block_stop", "index": 1}),
+    _se({"type": "message_stop"}),
+    json.dumps({"type": "result", "session_id": "s1"}),
+]
+
+_SONNET_VISIVEL = [
+    _se({"type": "message_start", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
+    _se({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+    _se({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "all but 9 die means 9 survive."}}),
+    _se({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc"}}),
+    _se({"type": "content_block_stop", "index": 0}),
+    _se({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}),
+    _se({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "9 sheep."}}),
+    _se({"type": "content_block_stop", "index": 1}),
+    _se({"type": "message_stop"}),
+    json.dumps({"type": "result", "session_id": "s1"}),
+]
+
+
+class TestThinkingRedigido:
+    """Opus 4.8 redige o thinking — não deve crescer o pane nem escrever header vazio."""
+
+    def test_thinking_vazio_nao_escreve_header(self, fake_client, capsys):
+        log_calls, anim_calls = _run_stream(fake_client, _OPUS_REDIGIDO)
+        # nenhum texto de thinking foi animado, nenhum header (cor de thinking) escrito
+        assert anim_calls == []
+        assert not any(THINKING_FG in t for t in log_calls)
+
+    def test_resposta_ainda_aparece(self, fake_client, capsys):
+        _run_stream(fake_client, _OPUS_REDIGIDO)
+        assert "51 = 3*17" in capsys.readouterr().out
+
+
+class TestThinkingVisivel:
+    """Sonnet expõe o thinking — header + texto renderizado como antes."""
+
+    def test_thinking_delta_renderiza(self, fake_client, capsys):
+        log_calls, anim_calls = _run_stream(fake_client, _SONNET_VISIVEL)
+        assert any("9 survive" in t for t in anim_calls)
+        assert any(THINKING_FG in t for t in log_calls)  # header foi escrito

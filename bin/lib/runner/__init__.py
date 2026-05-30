@@ -121,6 +121,7 @@ def run_turn(client, message, images=None):
     thinking_lines   = _idle_lines
     thinking_count   = 0
     thinking_col     = 0
+    thinking_header_written = False
     spinner_shown    = False
     _suppress_perm_text = False
     _perm_approved   = False
@@ -228,12 +229,14 @@ def run_turn(client, message, images=None):
                 block         = e.get("content_block", {})
                 current_block = block.get("type")
                 if current_block == "thinking":
-                    _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
-                    _resize_thinking(client.tmux_srv, _max_think_lines)
-                    thinking_lines = _max_think_lines
+                    # Header e resize são preguiçosos: só ocorrem quando chega texto
+                    # de thinking de fato (ver content_block_delta). Opus 4.8 redige o
+                    # thinking — só signature_delta, texto vazio — e nesse caso o pane
+                    # não cresce nem polui com timestamp à toa.
+                    thinking_header_written = False
                 elif current_block == "text":
                     _clear_status()
-                    if thinking_count > 0:
+                    if thinking_header_written:
                         _resize_thinking(client.tmux_srv, "summary")
                     if text_block_count > 0:
                         sys.stdout.write("\n")
@@ -248,24 +251,34 @@ def run_turn(client, message, images=None):
                 delta = e.get("delta", {})
                 dtype = delta.get("type")
 
-                if dtype == "thinking_delta":
-                    chunk_t = delta.get("thinking", "")
+                # Texto do thinking: Sonnet manda thinking_delta; outros modelos podem
+                # mandar como text_delta dentro do bloco thinking. Opus 4.8 redige o
+                # thinking (só signature_delta) — chunk_t fica vazio e nada é exibido.
+                if dtype == "thinking_delta" or (dtype == "text_delta" and current_block == "thinking"):
+                    chunk_t = delta.get("thinking") or delta.get("text") or ""
 
-                    def _on_newline():
-                        nonlocal thinking_count, thinking_col
-                        thinking_count += 1
-                        thinking_col    = 0
+                    if chunk_t:
+                        if not thinking_header_written:
+                            _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
+                            _resize_thinking(client.tmux_srv, _max_think_lines)
+                            thinking_lines = _max_think_lines
+                            thinking_header_written = True
 
-                    for ch in chunk_t:
-                        if ch == "\n":
-                            thinking_col = 0
-                        else:
-                            thinking_col += 1
-                            if thinking_col % 80 == 0:
-                                _on_newline()
+                        def _on_newline():
+                            nonlocal thinking_count, thinking_col
+                            thinking_count += 1
+                            thinking_col    = 0
 
-                    log_animated(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
-                    _show_status()
+                        for ch in chunk_t:
+                            if ch == "\n":
+                                thinking_col = 0
+                            else:
+                                thinking_col += 1
+                                if thinking_col % 80 == 0:
+                                    _on_newline()
+
+                        log_animated(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
+                        _show_status()
 
                 elif dtype == "text_delta":
                     chunk = delta.get("text", "")
@@ -292,7 +305,8 @@ def run_turn(client, message, images=None):
 
             elif et == "content_block_stop":
                 if current_block == "thinking":
-                    _log(THINKING_LOG, f"{RESET}\n")
+                    if thinking_header_written:
+                        _log(THINKING_LOG, f"{RESET}\n")
                 elif current_block == "text":
                     client._streaming_text = False
                     remainder = md_buf.flush()
