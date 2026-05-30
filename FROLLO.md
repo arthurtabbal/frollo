@@ -39,7 +39,7 @@ O autor tem forte ligação pessoal com a obra: foi fã da adaptação Disney de
 | Ferramenta | Mínimo | Motivo |
 |---|---|---|
 | Python | 3.10 | Ubuntu 22.04 LTS default; versões anteriores EOL |
-| tmux | 2.6 | `select-pane -T` (títulos de pane) + `pane-border-status` |
+| tmux | 3.1 | `split-window -l <porcentagem>` (em 3.1 o `-l` passou a aceitar %); também `select-pane -T` + `pane-border-status` |
 | jq | 1.6 | `--unbuffered` no observer; Ubuntu 20.04+ ship 1.6 |
 | nvim | 0.10 | Opcional — exigido apenas pelo NvChad config |
 | claude | qualquer | Claude Code CLI |
@@ -72,7 +72,7 @@ Usuário digita no chat.py
 - Log é um **arquivo único compartilhado** (`~/.claude/observer.jsonl`). `layout.sh` trunca no início (`> "$LOG"`).
 - Hooks usam `async: true` — nunca bloqueiam a execução do Claude.
 - Sequências ANSI são passadas ao `jq` via `--arg` com `$'\e'` bash syntax. **Não** embuti-las como literais no filtro jq.
-- **Stop events não são exibidos** — disparam até em respostas só-texto, produzem ruído.
+- **Stop e UserPromptSubmit são exibidos** no observer (`◀` muted e `▶`), dando início e fim de cada interação no stream. (Versões antigas suprimiam Stop por ruído; hoje ele entra como linha discreta.)
 - **PostToolUse só é mostrado para Bash** (com `duration_ms`) — para Read/Edit/Write/Glob não acrescenta além do PreToolUse.
 - `tail -n 0 -f` começa do fim do arquivo, nunca repete eventos de sessões anteriores.
 - O loop principal do client usa `select` com timeout de 150ms — garante animação do spinner mesmo em silêncio entre eventos do subprocesso.
@@ -100,44 +100,64 @@ O `install.sh` executa um smoke test automático ao final verificando que os art
 
 ## Módulos (bin/)
 
+`runner` e `tools` são **pacotes**, não arquivos únicos. As falas das gárgulas foram externalizadas em `characters/*.json` — `gargulas.py` virou apenas o loader.
+
 | Arquivo | Linhas | Responsabilidade |
 |---|---|---|
-| `chat.py` | ~250 | TUI principal: loop de input, /snapshot, /paste, /refresh |
-| `lib/runner.py` | ~360 | Executa turno: subprocess claude, loop de eventos, spinner, typewriter |
-| `lib/tools.py` | ~110 | Log de tool calls no pane de tools, animação das gárgulas |
-| `lib/input.py` | ~195 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, modos |
-| `lib/gargulas.py` | ~565 | As três gárgulas: falas por contexto, animação |
-| `lib/theme.py` | ~88 | Cores ANSI, `_F` (chamas), `_GLOW` (gradiente), citações, `_md()` |
+| `chat.py` | ~320 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
+| `lib/runner/__init__.py` | ~440 | Executa turno: subprocess claude, loop de eventos, spinner, streaming, rate-limit |
+| `lib/runner/panes.py` | ~60 | Redimensionamento dinâmico dos panes tmux (idle/summary/full) |
+| `lib/runner/permissions.py` | ~145 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
+| `lib/runner/stats.py` | ~16 | Preços por modelo e formatação de custo |
+| `lib/runner/text.py` | ~79 | `_typewrite` no stdout: wrap word-aware, cursor, skip por tecla |
+| `lib/tools/__init__.py` | ~97 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
+| `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |
+| `lib/tools/nvim.py` | ~41 | Jump pro editor nvim via tmux send-keys (Read/Edit/Write) |
+| `lib/input.py` | ~254 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, histórico, paste de imagem |
+| `lib/gargulas.py` | ~91 | Loader das gárgulas a partir de `characters/*.json` (valida schema e cor) |
+| `lib/typewriter.py` | ~39 | `log_animated` (typewriter em arquivos) + `_char_delay` |
+| `lib/theme.py` | ~147 | Cores ANSI, `_F` (chamas), `_GLOW` (gradiente), citações, `MdBuffer`, `_md()` |
 | `lib/session.py` | ~103 | Picker interativo de sessões anteriores |
-| `frollo.sh` | ~75 | Layout tmux: nvim + chat + tools + thinking |
+| `lib/config.py` | ~42 | Carrega/salva `~/.config/frollo/config.json`; detecta first-run |
+| `lib/configure.py` | ~85 | Wizard de configuração (typewriter, gárgulas, stats) |
+| `characters/*.json` | ~213 cada | Falas de Victor, Hugo e Gudule por categoria de evento |
+| `frollo.sh` | ~240 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana) |
 | `observe.sh` | ~87 | Viewer do observer passivo (jq + tail) |
+| `layout.sh` | ~26 | Layout simples: claude + observer lado a lado |
 | `hooks/log.sh` | 11 | Coração do sistema — `jq -c` + `flock` + `tee -a` |
 
-`lib/gargulas.py` é o segundo maior arquivo do projeto. As quimeras dominam a base de código numericamente — nenhuma delas faz algo computacionalmente útil.
+Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto. As quimeras dominam a base numericamente — nenhuma delas faz algo computacionalmente útil. Adicionar uma quarta gárgula é só criar um novo JSON com `name`, `color` e `falas`; nenhum código muda.
 
 ## Funcionalidades do cliente
 
 **Spinner animado**: enquanto aguarda eventos do subprocesso, anima `▲▲▲ pensando… Xs` com chamas ciclando em `_F` e "pensando…" ciclando em `_GLOW` (gradiente escuro→branco→escuro, efeito de lanterna). Loop usa `select(timeout=0.15)`.
 
-**Gárgulas**: Victor (pomposo), Hugo (entediado, com fome), Gudule (niilista, melancólica). Comentam em:
-- Tool calls (tools pane) — categorias: Bash, Edit, Write, Read, None
-- Acima do spinner (chat) — categoria: thinking
-- Probabilidade 30% por evento, timer de 8-20s para as do spinner
+**Gárgulas**: Victor (pomposo), Hugo (entediado, com fome), Gudule (niilista, melancólica). Definidas em `characters/*.json`. Comentam em:
+- Tool calls (tools pane) — categorias: Bash, Edit, Write, Read (demais ferramentas caem em `default`)
+- Acima do spinner / no fim do turno — categorias: thinking, bash_error, rate_limit, permission
+- Probabilidade 15% por evento (`random.random() > 0.15`); eventos como erro/rate-limit/permissão usam `force=True`
 - **Animação typewriter** em todas as falas
 
-**Typewriter**: `_typewrite()` para stdout, `log_animated()` para arquivos. Delay variável por caractere via `_char_delay()`:
-- Base: 28ms (chat), 30ms (thinking), 25ms (gárgulas)
-- Variação aleatória: 60%–190% do base por char
+**Typewriter**: `_typewrite()` (em `runner/text.py`) para stdout, `log_animated()` (em `typewriter.py`) para arquivos. Delay variável por caractere via `_char_delay()`:
+- Base padrão: 15ms (chat/stdout), 1ms (thinking — alto volume), 30ms (gárgulas e falas em arquivo)
+- Variação aleatória: 40%–140% do base por char (`random.uniform(0.4, 1.4)`)
 - Pausas por pontuação: `.!?` longa, `,;:—` média, `\n` fim de linha
-- Hesitação aleatória: 1.5% de chance, 120–350ms
+- Hesitação aleatória: 1.5% de chance, 180–450ms
+- Qualquer tecla durante o typewriter do stdout pula o efeito e despeja o resto de uma vez
 
 **`/snapshot`**: captura pane tmux atual + logs de tools/thinking (com ANSI colors) em `/tmp/claude-client/snapshot.txt` e envia automaticamente ao agente. O agente vê o estado visual atual sem nenhuma ação adicional do usuário.
 
 **`/refresh`**: reinicia o processo retomando a sessão atual (`--resume`).
 
-**Input multilinha**: `Alt+Enter` insere quebra de linha. `Enter` envia. Cursor suporta ←/→, Home/End, Ctrl+A/E, backspace atravessa newlines corretamente.
+**Input multilinha**: `Alt+Enter` insere quebra de linha. `Enter` envia. Cursor suporta ←/→, Home/End, Ctrl+A/E, ↑/↓ navega histórico, backspace atravessa newlines corretamente. `_visual_pos` modela o deferred-wrap do terminal para posicionar o cursor com wrap + multilinha.
 
-**Modos**: Normal (`--permission-mode acceptEdits`) e Auto (`--dangerously-skip-permissions`). Shift+Tab alterna.
+**Paste de imagem**: `Ctrl+V` lê imagem do clipboard (`wl-paste` no Wayland, `xclip` no X11 — stdlib + subprocess, sem Pillow), insere um marcador `[img]` e envia via `--input-format stream-json` no próximo turno.
+
+**Modos**: Normal e Auto, alternados por `Shift+Tab`. Auto adiciona `--dangerously-skip-permissions`. Normal **não** passa flag de permissão — depende do protocolo de permissão do CLI (`control_request`/`permission_request`) tratado em `runner/permissions.py`, com opção `[a]` para gravar no allowlist do projeto (`.claude/settings.local.json`).
+
+**Config + first-run**: na primeira execução (sem `~/.config/frollo/config.json`) roda um wizard (`configure.py`) que pergunta sobre typewriter, gárgulas e pane de stats. Reconfigurável depois com `--configure`. O `frollo.sh` também lê `stats_pane` da config para decidir se cria o pane do Rio Sena.
+
+**Pane de stats (Rio Sena)**: ao fim de cada turno escreve tokens (in/out), tempo e custo estimado do turno + acumulado da sessão, direto no PTY do pane. Preços por modelo em `runner/stats.py`.
 
 **Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o `claude` CLI usa o default do usuário. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo.
 
@@ -150,6 +170,7 @@ O `install.sh` executa um smoke test automático ao final verificando que os art
 | `/snapshot` | Captura estado visual e envia automaticamente ao agente |
 | `/paste` | Abre `$EDITOR` para colar texto longo; envia ao fechar |
 | `/refresh` | Reinicia retomando sessão atual |
+| `/new` | Reinicia com contexto zerado (re-exec sem `--resume`) |
 | `/model [nome]` | Sem arg: mostra modelo atual. Com arg (`opus`/`sonnet`/`haiku` ou ID completo): troca a partir do próximo turno |
 | `Shift+Tab` | Alterna modo Normal ↔ Auto |
 | `Alt+Enter` | Quebra de linha no input (multilinha) |
@@ -165,7 +186,7 @@ elif .tool_name == "MyTool" then
   blue("⊕") + "  " + (.tool_input.some_field // .tool_name)
 ```
 
-Para o client (`bin/lib/tools.py`), adiciona branch em `log_tool_call()`.
+Para o client (`bin/lib/tools/__init__.py`), adiciona branch em `log_tool_call()`. O `observe.sh` já trata `Agent`, `WebFetch`/`WebSearch`, `mcp__*`, `UserPromptSubmit` (`▶`) e `Stop` (`◀` muted) além das ferramentas básicas.
 
 ---
 
