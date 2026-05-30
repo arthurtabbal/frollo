@@ -18,6 +18,9 @@ def _isolate(monkeypatch):
     """Neutraliza todos os side effects de I/O em cada teste."""
     monkeypatch.setattr("lib.tools._clear_tools_pane", lambda: None)
     monkeypatch.setattr("lib.tools._log", lambda *a: None)
+    # _entry vive em tools.display e chama _log no namespace de display —
+    # patchar só lib.tools._log não cobre o caminho Edit/Write/Read/Bash.
+    monkeypatch.setattr("lib.tools.display._log", lambda *a: None)
     monkeypatch.setattr("lib.tools._gargula_comment", lambda *a: ("", ""))
     monkeypatch.setattr("lib.tools.log_animated", lambda *a, **kw: None)
     monkeypatch.setattr("lib.tools._find_edit_line", lambda *a: None)

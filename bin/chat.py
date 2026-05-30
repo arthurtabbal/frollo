@@ -16,11 +16,25 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib.theme import (
-    DIM, RESET, YELLOW, WHITE,
+    DIM, RESET, YELLOW, WHITE, PURPLE,
     CHAT_FG, TOOLS_BASH,
     HEADER_TITLE, HEADER_STONE, HEADER_DARK, HEADER_ROSE,
     _QUOTES,
 )
+
+
+def _short_model(name):
+    """Reduz 'claude-opus-4-7-20251022' → 'opus'. Aceita aliases já curtos."""
+    if not name:
+        return ""
+    n = name.lower()
+    for alias in ("opus", "sonnet", "haiku"):
+        if alias in n:
+            return alias
+    return name
+
+
+MODEL_ALIASES = ("opus", "sonnet", "haiku")
 from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn
@@ -40,11 +54,13 @@ MODES = [Mode.NORMAL, Mode.AUTO]
 
 
 class ClaudeClient:
-    def __init__(self, resume_id=None):
+    def __init__(self, resume_id=None, model=None):
         self.resume_id = resume_id        # None = nova sessão, "" = --continue, "<id>" = --resume <id>
         self.session_id = None            # preenchido após o primeiro turno via evento result
         self.first_turn = True
         self.mode = Mode.NORMAL
+        self.model = model                # None = default do claude CLI; senão alias/id passado pra --model
+        self.observed_model = ""          # preenchido via stream events (message_start.model)
         self.cwd = os.getcwd()
         self.nvim_pane = os.environ.get("CLAUDE_NVIM_PANE", "")
         self.tmux_srv = os.environ.get("CLAUDE_TMUX_SRV", "")
@@ -68,7 +84,12 @@ class ClaudeClient:
             badge = f"{TOOLS_BASH}auto{RESET}"
         else:
             badge = f"{DIM}normal{RESET}"
-        return f"{badge} {WHITE}>_{RESET} "
+        model_display = _short_model(self.model or self.observed_model)
+        if model_display:
+            model_badge = f"{PURPLE}{model_display}{RESET} "
+        else:
+            model_badge = ""
+        return f"{model_badge}{badge} {WHITE}>_{RESET} "
 
     def _print_header(self):
         R = RESET
@@ -194,6 +215,18 @@ class ClaudeClient:
                         sys.stdout.flush()
                         run_turn(self, content)
                     continue
+                if user_input.strip().startswith("/model"):
+                    parts = user_input.strip().split(maxsplit=1)
+                    if len(parts) == 1:
+                        current = self.model or self.observed_model or "default"
+                        sys.stdout.write(f"\n{DIM}modelo atual: {RESET}{_short_model(current) or current}\n")
+                        sys.stdout.flush()
+                    else:
+                        choice = parts[1].strip().lower()
+                        self.model = choice
+                        sys.stdout.write(f"\n{DIM}modelo → {RESET}{PURPLE}{_short_model(choice) or choice}{RESET}{DIM} (próximo turno){RESET}\n")
+                        sys.stdout.flush()
+                    continue
                 if user_input.strip() == "/new":
                     sys.stdout.write(f"{DIM}novo contexto…{RESET}\n")
                     sys.stdout.flush()
@@ -250,7 +283,17 @@ if __name__ == "__main__":
                        help="retoma conversa: sem ID abre picker, com ID retoma direto")
         p.add_argument("--configure", action="store_true",
                        help="reconfigura preferências (typewriter, gárgulas, stats)")
+        p.add_argument("--model", metavar="NAME",
+                       help="modelo do claude: alias (opus|sonnet|haiku) ou ID completo")
+        mg = p.add_mutually_exclusive_group()
+        for alias in MODEL_ALIASES:
+            mg.add_argument(f"--{alias}", dest="model_alias", action="store_const", const=alias,
+                            help=f"atalho para --model {alias}")
         args = p.parse_args()
+
+        if args.model and args.model_alias:
+            p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
+        model = args.model or args.model_alias
 
         resume_id = None
         if args.resume is not None:
@@ -263,7 +306,7 @@ if __name__ == "__main__":
         if args.configure or _first_run:
             run_configure(first_run=_first_run)
 
-        ClaudeClient(resume_id=resume_id).chat()
+        ClaudeClient(resume_id=resume_id, model=model).chat()
     except (KeyboardInterrupt, EOFError):
         pass
     except BaseException as e:

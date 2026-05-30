@@ -48,6 +48,8 @@ def run_turn(client, message, images=None):
         cmd += ["-p", message]
     if client.mode.value == "auto":
         cmd.append("--dangerously-skip-permissions")
+    if getattr(client, "model", None):
+        cmd += ["--model", client.model]
     if client.first_turn and client.resume_id is not None:
         if client.resume_id:
             cmd += ["--resume", client.resume_id]
@@ -215,6 +217,8 @@ def run_turn(client, message, images=None):
                 msg          = e.get("message", {})
                 input_tokens = msg.get("usage", {}).get("input_tokens", 0)
                 model_name   = msg.get("model", model_name)
+                if model_name:
+                    client.observed_model = model_name
                 _show_status()
 
             elif et == "message_delta":

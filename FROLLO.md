@@ -139,6 +139,8 @@ O `install.sh` executa um smoke test automático ao final verificando que os art
 
 **Modos**: Normal (`--permission-mode acceptEdits`) e Auto (`--dangerously-skip-permissions`). Shift+Tab alterna.
 
+**Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o `claude` CLI usa o default do usuário. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo.
+
 **Picker de sessões**: `--resume` sem argumento abre picker interativo com histórico de sessões do projeto atual.
 
 ## Comandos no chat
@@ -148,6 +150,7 @@ O `install.sh` executa um smoke test automático ao final verificando que os art
 | `/snapshot` | Captura estado visual e envia automaticamente ao agente |
 | `/paste` | Abre `$EDITOR` para colar texto longo; envia ao fechar |
 | `/refresh` | Reinicia retomando sessão atual |
+| `/model [nome]` | Sem arg: mostra modelo atual. Com arg (`opus`/`sonnet`/`haiku` ou ID completo): troca a partir do próximo turno |
 | `Shift+Tab` | Alterna modo Normal ↔ Auto |
 | `Alt+Enter` | Quebra de linha no input (multilinha) |
 | `Ctrl+C` | Cancela turno em andamento (ou limpa linha se idle) |
