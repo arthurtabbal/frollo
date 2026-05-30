@@ -8,6 +8,8 @@ Documentação do projeto para Claude Code. Todo Claude que trabalhar neste repo
 
 O nome tem duplo sentido intencional: **Claude** é tanto o modelo de IA quanto **Claude Frollo**, o arquidiácono que observa Paris do alto de Notre-Dame. O projeto literalmente constrói a janela pela qual o Claude será observado.
 
+O objetivo real do projeto — descoberto em uso, não no design — é **tirar a sensação de burrice do ser humano**. Quando o texto aparece de uma vez você fica parado esperando sem nada pra fazer, como se tivesse ficado pra trás enquanto o agente "pensou". Com typewriter, gárgulas e thinking separado, você acompanha junto. O ritmo é mais humano. Você não é burro — você só precisava de uma janela melhor.
+
 O projeto é **open source**. Todo o tema usa exclusivamente a obra de Victor Hugo, que é domínio público. A adaptação Disney (1996) é protegida por direitos autorais — evitar letras de músicas e designs visuais específicos dessa versão.
 
 ### Tema e easter eggs
