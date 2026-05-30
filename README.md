@@ -89,6 +89,8 @@ Tails `~/.claude/observer.jsonl` and renders tool calls from all Claude Code ses
 | `Ctrl+C` | Cancel running turn (or clear line if idle) |
 | `Ctrl+D` | Exit |
 
+> **Tip — run Frollo with Sonnet.** Sonnet streams its reasoning into the thinking pane (`display: "summarized"`), which is half the point of Frollo. Opus 4.8/4.7 omit the thinking text at the API level (`display: "omitted"` — only an encrypted `signature` is returned, unrecoverable by the client), so the pane just shows a "thinking omitted" note. If you do use Opus, consider turning off `thinking_autoresize` in the config so the empty pane stays small.
+
 ---
 
 ## The Gargoyles

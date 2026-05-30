@@ -159,6 +159,8 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 
 **Thinking omitido / auto-resize**: modelos com `display:"omitted"` (Opus 4.8/4.7) não enviam o texto do thinking — só `signature`. Nesses casos o pane mostra a nota *"o modelo omitiu o thinking"* em vez de crescer à toa. O `thinking_autoresize` (default `true`) controla o crescimento dinâmico do pane (idle→full→summary); desligado, o pane fica pequeno e fixo no topo — útil justamente com Opus.
 
+> **Recomendação: use o Frollo com Sonnet.** O Sonnet usa `display:"summarized"` e mostra o raciocínio no pane de thinking — que é boa parte da graça do Frollo. Sob Opus 4.8/4.7 o thinking é **omitido pela API** (não há como o cliente recuperá-lo) e o pane só exibe a nota. Verificado empiricamente em maio/2026: Sonnet emite `thinking_delta` com texto; Opus emite só `signature_delta`. Se for usar Opus, considere desligar o `thinking_autoresize` pra não desperdiçar espaço com um pane vazio.
+
 **Pane de stats (Rio Sena)**: ao fim de cada turno escreve tokens (in/out), tempo e custo estimado do turno + acumulado da sessão, direto no PTY do pane. Preços por modelo em `runner/stats.py`.
 
 **Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o `claude` CLI usa o default do usuário. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo.
