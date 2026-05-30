@@ -56,10 +56,10 @@ def _se(event):
     return json.dumps({"type": "stream_event", "event": event})
 
 
-def _run_stream(fake_client, lines):
+def _run_stream(fake_client, lines, config_override=None):
     """Roda run_turn com um stream fixo, capturando o que iria pro pane de thinking.
 
-    Retorna (chamadas_de__log, chamadas_de_log_animated). Cada item é o texto escrito.
+    Retorna (chamadas_de__log, chamadas_de_log_animated, chamadas_de_resize).
     """
     proc = MagicMock()
     proc.stdout = _FakeStdout([l + "\n" for l in lines])
@@ -71,7 +71,10 @@ def _run_stream(fake_client, lines):
     fake_client._total_elapsed = 0.0
     fake_client._total_cost = 0.0
 
-    log_calls, anim_calls = [], []
+    cfg = {"typewriter": False, "gargoyles": False}
+    cfg.update(config_override or {})
+
+    log_calls, anim_calls, resize_calls = [], [], []
 
     rundir = Path(tempfile.mkdtemp())  # sem stats_tty → pula o bloco de stats
     devnull = open(os.devnull, "r")
@@ -81,14 +84,15 @@ def _run_stream(fake_client, lines):
              patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
              patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
              patch("lib.runner.termios.tcsetattr"), \
-             patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+             patch("lib.runner.config.load", return_value=cfg), \
+             patch("lib.runner._resize_thinking", side_effect=lambda srv, size: resize_calls.append(size)), \
              patch("lib.runner._log", side_effect=lambda path, text: log_calls.append(text)), \
              patch("lib.runner.log_animated", side_effect=lambda path, text, **kw: anim_calls.append(text)), \
              patch.object(sys, "stdin", devnull):
             run_turn(fake_client, "oi")
     finally:
         devnull.close()
-    return log_calls, anim_calls
+    return log_calls, anim_calls, resize_calls
 
 
 # Streams reais capturados de `claude --output-format stream-json` (maio 2026):
@@ -121,13 +125,19 @@ _SONNET_VISIVEL = [
 
 
 class TestThinkingRedigido:
-    """Opus 4.8 redige o thinking — não deve crescer o pane nem escrever header vazio."""
+    """Opus 4.8 omite o thinking — não cresce o pane, mas avisa que foi omitido."""
 
     def test_thinking_vazio_nao_escreve_header(self, fake_client, capsys):
-        log_calls, anim_calls = _run_stream(fake_client, _OPUS_REDIGIDO)
+        log_calls, anim_calls, resize_calls = _run_stream(fake_client, _OPUS_REDIGIDO)
         # nenhum texto de thinking foi animado, nenhum header (cor de thinking) escrito
         assert anim_calls == []
         assert not any(THINKING_FG in t for t in log_calls)
+        # nem cresceu o pane (sem resize pra _max_think_lines / "summary")
+        assert resize_calls == []
+
+    def test_escreve_nota_de_omitido(self, fake_client, capsys):
+        log_calls, _, _ = _run_stream(fake_client, _OPUS_REDIGIDO)
+        assert any("omitiu o thinking" in t for t in log_calls)
 
     def test_resposta_ainda_aparece(self, fake_client, capsys):
         _run_stream(fake_client, _OPUS_REDIGIDO)
@@ -138,6 +148,18 @@ class TestThinkingVisivel:
     """Sonnet expõe o thinking — header + texto renderizado como antes."""
 
     def test_thinking_delta_renderiza(self, fake_client, capsys):
-        log_calls, anim_calls = _run_stream(fake_client, _SONNET_VISIVEL)
+        log_calls, anim_calls, resize_calls = _run_stream(fake_client, _SONNET_VISIVEL)
         assert any("9 survive" in t for t in anim_calls)
         assert any(THINKING_FG in t for t in log_calls)  # header foi escrito
+        assert resize_calls  # cresceu o pane
+
+
+class TestAutoResizeDesligado:
+    """Com thinking_autoresize=False o pane nunca é redimensionado."""
+
+    def test_sem_resize_mesmo_com_thinking_visivel(self, fake_client, capsys):
+        log_calls, anim_calls, resize_calls = _run_stream(
+            fake_client, _SONNET_VISIVEL, config_override={"thinking_autoresize": False}
+        )
+        assert resize_calls == []           # nenhum resize
+        assert any("9 survive" in t for t in anim_calls)  # mas o texto ainda renderiza

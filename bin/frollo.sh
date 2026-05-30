@@ -27,11 +27,15 @@ mkdir -p "$RUNDIR"
 > "$RUNDIR/thinking"
 > "$RUNDIR/tools"
 
-_FROLLO_CONFIG="$HOME/.config/frollo/config.json"
+_FROLLO_CONFIG="${FROLLO_CONFIG:-$HOME/.config/frollo/config.json}"
 _show_stats=true
+_think_autoresize=true
 if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
     if jq -e '.stats_pane == false' "$_FROLLO_CONFIG" >/dev/null 2>&1; then
         _show_stats=false
+    fi
+    if jq -e '.thinking_autoresize == false' "$_FROLLO_CONFIG" >/dev/null 2>&1; then
+        _think_autoresize=false
     fi
 fi
 
@@ -79,10 +83,15 @@ if [[ "$_show_stats" == "true" ]]; then
     tmux -L "$SRV" display-message -t "$P_STATS" -p "#{pane_tty}" > "$RUNDIR/stats_tty"
 fi
 
-# Thinking: tamanho idle desde o início (mesmo cálculo do runner.py)
+# Thinking: tamanho idle desde o início (mesmo cálculo do runner.py).
+# Com auto-resize desligado, fica num pane pequeno fixo no topo (só a nota).
 ROWS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{window_height}" 2>/dev/null || tput lines)
-IDLE_THINK=$(( ROWS * 16 / 100 ))
-[ "$IDLE_THINK" -lt 8 ] && IDLE_THINK=8
+if [[ "$_think_autoresize" == "false" ]]; then
+    IDLE_THINK=3
+else
+    IDLE_THINK=$(( ROWS * 16 / 100 ))
+    [ "$IDLE_THINK" -lt 8 ] && IDLE_THINK=8
+fi
 tmux -L "$SRV" split-window -v -b -l "$IDLE_THINK" -t "$P_CHAT" \
     "stty -echo; tail -n 0 -f $RUNDIR/thinking 2>/dev/null"
 P_THINKING=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")

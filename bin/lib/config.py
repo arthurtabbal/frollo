@@ -11,6 +11,7 @@ DEFAULTS: dict = {
     "typewriter": True,
     "gargoyles":  True,
     "stats_pane": True,
+    "thinking_autoresize": True,
 }
 
 _cache: dict | None = None

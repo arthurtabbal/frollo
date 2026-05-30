@@ -73,13 +73,24 @@ def run_configure(*, first_run: bool = False) -> None:
         "Exibe tokens, tempo e custo após cada turno.",
         existing.get("stats_pane", True),
     )
+    thinking_autoresize = _ask(
+        "AUTO-RESIZE DO THINKING",
+        "Pane de thinking cresce durante o raciocínio e encolhe depois. Desligue "
+        "para manter um pane pequeno fixo no topo (útil com Opus, que omite o thinking).",
+        existing.get("thinking_autoresize", True),
+    )
 
-    cfg = {"typewriter": typewriter, "gargoyles": gargoyles, "stats_pane": stats_pane}
+    cfg = {
+        "typewriter": typewriter,
+        "gargoyles": gargoyles,
+        "stats_pane": stats_pane,
+        "thinking_autoresize": thinking_autoresize,
+    }
     _save(cfg)
 
     sys.stdout.write(f"\n{_LINE}\n\n")
     sys.stdout.write(f"   {DIM}Configuração salva em {CONFIG_PATH}{RESET}\n\n")
-    if not stats_pane:
-        sys.stdout.write(f"   {DIM}Painel de stats desativado — reinicie o Frollo para aplicar.{RESET}\n\n")
+    if not stats_pane or not thinking_autoresize:
+        sys.stdout.write(f"   {DIM}Mudanças de layout exigem reiniciar o Frollo para aplicar.{RESET}\n\n")
     sys.stdout.flush()
     time.sleep(1.2)

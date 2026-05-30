@@ -155,7 +155,9 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 
 **Modos**: Normal e Auto, alternados por `Shift+Tab`. Auto adiciona `--dangerously-skip-permissions`. Normal **não** passa flag de permissão — depende do protocolo de permissão do CLI (`control_request`/`permission_request`) tratado em `runner/permissions.py`, com opção `[a]` para gravar no allowlist do projeto (`.claude/settings.local.json`).
 
-**Config + first-run**: na primeira execução (sem `~/.config/frollo/config.json`) roda um wizard (`configure.py`) que pergunta sobre typewriter, gárgulas e pane de stats. Reconfigurável depois com `--configure`. O `frollo.sh` também lê `stats_pane` da config para decidir se cria o pane do Rio Sena.
+**Config + first-run**: na primeira execução (sem `~/.config/frollo/config.json`) roda um wizard (`configure.py`) que pergunta sobre typewriter, gárgulas, pane de stats e auto-resize do thinking. Reconfigurável depois com `--configure`. O `frollo.sh` lê `stats_pane` (cria ou não o pane do Rio Sena) e `thinking_autoresize` (pane pequeno fixo no topo quando desligado) da config.
+
+**Thinking omitido / auto-resize**: modelos com `display:"omitted"` (Opus 4.8/4.7) não enviam o texto do thinking — só `signature`. Nesses casos o pane mostra a nota *"o modelo omitiu o thinking"* em vez de crescer à toa. O `thinking_autoresize` (default `true`) controla o crescimento dinâmico do pane (idle→full→summary); desligado, o pane fica pequeno e fixo no topo — útil justamente com Opus.
 
 **Pane de stats (Rio Sena)**: ao fim de cada turno escreve tokens (in/out), tempo e custo estimado do turno + acumulado da sessão, direto no PTY do pane. Preços por modelo em `runner/stats.py`.
 

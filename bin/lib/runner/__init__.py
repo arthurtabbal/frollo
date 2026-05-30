@@ -103,6 +103,7 @@ def run_turn(client, message, images=None):
     termios.tcsetattr(_fd, termios.TCSADRAIN, _no_echo)
 
     cfg = config.load()
+    thinking_autoresize = cfg.get("thinking_autoresize", True)
 
     _tool_names      = {}
     start_time       = time.time()
@@ -236,7 +237,7 @@ def run_turn(client, message, images=None):
                     thinking_header_written = False
                 elif current_block == "text":
                     _clear_status()
-                    if thinking_header_written:
+                    if thinking_header_written and thinking_autoresize:
                         _resize_thinking(client.tmux_srv, "summary")
                     if text_block_count > 0:
                         sys.stdout.write("\n")
@@ -260,8 +261,9 @@ def run_turn(client, message, images=None):
                     if chunk_t:
                         if not thinking_header_written:
                             _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
-                            _resize_thinking(client.tmux_srv, _max_think_lines)
-                            thinking_lines = _max_think_lines
+                            if thinking_autoresize:
+                                _resize_thinking(client.tmux_srv, _max_think_lines)
+                                thinking_lines = _max_think_lines
                             thinking_header_written = True
 
                         def _on_newline():
@@ -307,6 +309,10 @@ def run_turn(client, message, images=None):
                 if current_block == "thinking":
                     if thinking_header_written:
                         _log(THINKING_LOG, f"{RESET}\n")
+                    else:
+                        # Modelo omitiu o thinking (Opus 4.8/4.7 usam display:"omitted":
+                        # só signature, texto vazio). Mostra uma nota em vez de pane mudo.
+                        _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}  {DIM}— o modelo omitiu o thinking (display:omitted){RESET}\n")
                 elif current_block == "text":
                     client._streaming_text = False
                     remainder = md_buf.flush()
@@ -443,7 +449,7 @@ def run_turn(client, message, images=None):
             pass
 
     proc.wait()
-    if thinking_lines > _idle_lines:
+    if thinking_autoresize and thinking_lines > _idle_lines:
         _resize_thinking(client.tmux_srv, "idle")
     termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
