@@ -113,7 +113,8 @@ class InputReader:
                 sys.stdout.write(f'\033[{trow}A')
             sys.stdout.write('\r\033[J')
             sys.stdout.write(self._prompt())
-            sys.stdout.write(''.join(line).replace('\n', '\r\n'))
+            display_text = ''.join(line).replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
+            sys.stdout.write(display_text)
             rdiff = erow - crow
             if rdiff > 0:
                 sys.stdout.write(f'\033[{rdiff}A')
@@ -124,7 +125,7 @@ class InputReader:
             trow = crow
 
         def _submit():
-            text = ''.join(line)
+            text = ''.join(line).replace('\r\n', '\n').replace('\r', '\n')
             if text.strip():
                 self._history.append(text)
             if pre_clear_hook:
