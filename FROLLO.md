@@ -163,7 +163,7 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 
 **Pane de stats (Rio Sena)**: ao fim de cada turno escreve tokens (in/out), tempo e custo estimado do turno + acumulado da sessão, direto no PTY do pane. Preços por modelo em `runner/stats.py`.
 
-**Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o `claude` CLI usa o default do usuário. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo.
+**Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o Frollo usa **sonnet** por default (alinhado à recomendação do projeto: Sonnet mostra o thinking). O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo.
 
 **Picker de sessões**: `--resume` sem argumento abre picker interativo com histórico de sessões do projeto atual.
 
