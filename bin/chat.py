@@ -79,6 +79,28 @@ class ClaudeClient:
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
         self.mode = self._mode_ref[0]
 
+    def _update_model_title(self):
+        """Fixa o modelo atual no título da borda do pane de chat (chrome do tmux —
+        sempre visível, não rola com o output). Mostra o pedido ou, na falta, o observado."""
+        if not self.tmux_srv:
+            return
+        pane = os.environ.get("TMUX_PANE", "")  # tmux exporta o pane do próprio cliente
+        if not pane:
+            try:
+                pane = (RUNDIR / "chat_pane").read_text().strip()
+            except OSError:
+                return
+        if not pane:
+            return
+        model = _short_model(self.model or self.observed_model) or "?"
+        try:
+            subprocess.run(
+                ["tmux", "-L", self.tmux_srv, "select-pane", "-t", pane, "-T", f"▲ chat · {model}"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     def _prompt(self):
         if self.mode == Mode.AUTO:
             badge = f"{TOOLS_BASH}auto{RESET}"
@@ -180,6 +202,7 @@ class ClaudeClient:
 
     def chat(self):
         self._print_header()
+        self._update_model_title()
         if self.resume_id is not None:
             if self.resume_id:
                 sys.stdout.write(f"{CHAT_FG}retomando sessão {self.resume_id[:8]}…{RESET}\n\n")
@@ -224,6 +247,7 @@ class ClaudeClient:
                     else:
                         choice = parts[1].strip().lower()
                         self.model = choice
+                        self._update_model_title()
                         sys.stdout.write(f"\n{DIM}modelo → {RESET}{PURPLE}{_short_model(choice) or choice}{RESET}{DIM} (próximo turno){RESET}\n")
                         sys.stdout.flush()
                     continue
@@ -249,6 +273,7 @@ class ClaudeClient:
                 while run_turn(self, user_input, images=images):
                     user_input = getattr(self, '_retry_context', '.')
                     images = None
+                self._update_model_title()
             except KeyboardInterrupt:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
@@ -293,7 +318,7 @@ if __name__ == "__main__":
 
         if args.model and args.model_alias:
             p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
-        model = args.model or args.model_alias or "sonnet"
+        model = args.model or args.model_alias or "haiku"
 
         resume_id = None
         if args.resume is not None:
