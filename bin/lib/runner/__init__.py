@@ -414,7 +414,7 @@ def run_turn(client, message, images=None):
         if cfg.get("gargoyles", True):
             _g_prefix, _g_fala = _gargula_comment("rate_limit", force=True)
             if _g_prefix:
-                _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+                _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
 

@@ -50,7 +50,7 @@ def _show_perm_banner(tool_name, inp=None, *, blocked=False):
         _g_prefix, _g_fala = _gargula_comment("permission", force=True)
         if _g_prefix:
             sys.stdout.write("\n")
-            _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025, wrap=False)
+            _typewrite(_g_prefix + _g_fala.rstrip('\n'), delay=0.025)
             sys.stdout.write("\n\n")
             sys.stdout.flush()
 
