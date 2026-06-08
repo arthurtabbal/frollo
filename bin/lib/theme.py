@@ -118,6 +118,9 @@ class MdBuffer:
 
     def _balanced(self) -> bool:
         t = self._buf
+        # Fenced code block open: wait for closing ```
+        if t.count('```') % 2 != 0:
+            return False
         # Heading in progress: don't flush until the line ends with \n
         if re.search(r'(?:^|\n)#{1,3} [^\n]*\Z', t):
             return False
@@ -133,11 +136,22 @@ class MdBuffer:
 CLEAR = "\033[2J\033[H"  # erase display + cursor home (preserva scrollback no tmux)
 
 
+def _render_code_block(m):
+    lang = m.group(1).strip()
+    code = m.group(2)
+    if code.endswith('\n'):
+        code = code[:-1]
+    label = (DIM + CYAN + lang + RESET + '\n') if lang else ''
+    lines = '\n'.join(DIM + '│' + RESET + ' ' + MD_CODE + ln + RESET + CHAT_FG for ln in code.split('\n'))
+    return label + lines + '\n'
+
+
 def _md(text):
     """Converte markdown comum para ANSI. Funciona por chunk — spans que cruzam chunks ficam crus."""
     B = "\033[1m"  # bold — herda âmbar do CHAT_FG
     I = "\033[4m"          # sublinhado — mais confiável que italic no tmux
     R = RESET + CHAT_FG
+    text = re.sub(r'```([^\n]*)\n(.*?)```', _render_code_block, text, flags=re.DOTALL)
     text = re.sub(r'`([^`\n]+)`',                MD_CODE + r'\1' + R, text)
     text = re.sub(r'\*\*([^*\n]+)\*\*',          B       + r'\1' + R, text)
     text = re.sub(r'__([^_\n]+)__',              B       + r'\1' + R, text)

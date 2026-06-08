@@ -114,7 +114,6 @@ def run_turn(client, message, images=None):
     client._streaming_text = False
     text_block_count = 0
     fire_frame       = 0
-    in_code_block    = False
     md_buf           = MdBuffer()
     _rows            = _window_height(client.tmux_srv)
     _idle_lines      = max(8,  int(_rows * 0.16))
@@ -288,16 +287,7 @@ def run_turn(client, message, images=None):
                     if _suppress_perm_text:
                         pass
                     else:
-                        if chunk.count("```") % 2 == 1:
-                            remainder = md_buf.flush()
-                            if remainder:
-                                if cfg.get("typewriter", True):
-                                    _typewrite(CHAT_FG + remainder + RESET)
-                                else:
-                                    sys.stdout.write(CHAT_FG + remainder + RESET)
-                                    sys.stdout.flush()
-                            in_code_block = not in_code_block
-                        rendered = chunk if in_code_block else md_buf.feed(chunk)
+                        rendered = md_buf.feed(chunk)
                         if rendered:
                             if cfg.get("typewriter", True):
                                 _typewrite(CHAT_FG + rendered + RESET)
