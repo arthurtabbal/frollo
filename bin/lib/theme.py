@@ -142,7 +142,7 @@ def _render_code_block(m):
     if code.endswith('\n'):
         code = code[:-1]
     label = (DIM + CYAN + lang + RESET + '\n') if lang else ''
-    lines = '\n'.join(DIM + '│' + RESET + ' ' + MD_CODE + ln + RESET + CHAT_FG for ln in code.split('\n'))
+    lines = '\n'.join('  ' + MD_CODE + ln + RESET + CHAT_FG for ln in code.split('\n'))
     return label + lines + '\n'
 
 
