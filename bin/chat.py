@@ -318,7 +318,7 @@ if __name__ == "__main__":
 
         if args.model and args.model_alias:
             p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
-        model = args.model or args.model_alias or "haiku"
+        model = args.model or args.model_alias or "sonnet"
 
         resume_id = None
         if args.resume is not None:
