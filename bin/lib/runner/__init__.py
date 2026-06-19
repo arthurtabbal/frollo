@@ -463,7 +463,8 @@ def run_turn(client, message, images=None):
                 f"{client._total_elapsed:.0f}s · {_fmt_cost(client._total_cost)}"
             )
             _ctx_max  = _model_ctx_window(model_name)
-            _bar, _pct = _ctx_bar(input_tokens, _ctx_max)
+            _ctx_used = input_tokens + cache_read_tokens + cache_creation_tokens
+            _bar, _pct = _ctx_bar(_ctx_used, _ctx_max)
             if _pct >= 0.85:
                 _bar_col = '\033[91m'
             elif _pct >= 0.70:
@@ -473,7 +474,7 @@ def run_turn(client, message, images=None):
             ctx_line = (
                 f"\r\033[2K{DIM}{'ctx':>8}{RESET}  ▦   "
                 f"{_bar_col}{_bar}{RESET}  "
-                f"{_pct*100:.0f}%  {_fmt_tok(input_tokens)}/{_fmt_tok(_ctx_max)}"
+                f"{_pct*100:.0f}%  {_fmt_tok(_ctx_used)}/{_fmt_tok(_ctx_max)}"
             )
             quota_line = _quota_line(getattr(client, '_last_usage', None))
             content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line

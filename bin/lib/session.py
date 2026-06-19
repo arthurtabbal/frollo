@@ -40,8 +40,10 @@ def _pick_session_impl(cwd):
                     try:
                         ev = json.loads(line)
                         if ev.get("type") == "queue-operation" and ev.get("operation") == "enqueue":
-                            first_msg = ev.get("content", "").replace("\n", " ")
-                            break
+                            content = ev.get("content", "").strip()
+                            if content and not content.startswith("/"):
+                                first_msg = content.replace("\n", " ")
+                                break
                     except Exception:
                         continue
         except Exception:
