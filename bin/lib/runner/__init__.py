@@ -5,6 +5,7 @@ import select
 import subprocess
 import sys
 import termios
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -24,7 +25,8 @@ from .panes import (
     _window_height, _resize_thinking,
 )
 from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request
-from .stats import _model_price, _fmt_cost
+from .stats import _model_price, _fmt_cost, _model_ctx_window, _ctx_bar
+from ..usage import fetch_usage
 
 from ..tools import RUNDIR
 from .. import config
@@ -105,10 +107,12 @@ def run_turn(client, message, images=None):
     cfg = config.load()
     thinking_autoresize = cfg.get("thinking_autoresize", True)
 
-    _tool_names      = {}
-    start_time       = time.time()
-    input_tokens     = 0
-    output_tokens    = 0
+    _tool_names           = {}
+    start_time            = time.time()
+    input_tokens          = 0
+    output_tokens         = 0
+    cache_read_tokens     = 0
+    cache_creation_tokens = 0
     current_block    = None
     text_started     = False
     client._streaming_text = False
@@ -214,10 +218,13 @@ def run_turn(client, message, images=None):
             et = e.get("type")
 
             if et == "message_start":
-                rate_limited = False
-                msg          = e.get("message", {})
-                input_tokens = msg.get("usage", {}).get("input_tokens", 0)
-                model_name   = msg.get("model", model_name)
+                rate_limited  = False
+                msg           = e.get("message", {})
+                usage         = msg.get("usage", {})
+                input_tokens          = usage.get("input_tokens", 0)
+                cache_read_tokens     = usage.get("cache_read_input_tokens", 0)
+                cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
+                model_name    = msg.get("model", model_name)
                 if model_name:
                     client.observed_model = model_name
                 _show_status()
@@ -416,14 +423,38 @@ def run_turn(client, message, images=None):
     _cost_turn  = input_tokens / 1e6 * _in_price + output_tokens / 1e6 * _out_price
     client._total_cost = getattr(client, '_total_cost', 0.0) + _cost_turn
 
+    def _quota_col(p):
+        if p is None:
+            return DIM
+        if p >= 85:
+            return '\033[91m'
+        if p >= 70:
+            return YELLOW
+        return DIM
+
+    def _quota_line(usage):
+        if not usage:
+            return f"\r\033[2K{DIM}{'cota':>8}  ◎   carregando…{RESET}"
+        s_pct = usage.get('session_pct')
+        w_pct = usage.get('week_pct')
+        s_rst = usage.get('session_reset', '')
+        s_part = f"{_quota_col(s_pct)}{s_pct}%{RESET}" if s_pct is not None else f"{DIM}?%{RESET}"
+        w_part = f"{_quota_col(w_pct)}{w_pct}%{RESET}" if w_pct is not None else f"{DIM}?%{RESET}"
+        rst_part = f"  {DIM}↺ {s_rst}{RESET}" if s_rst else ""
+        return (
+            f"\r\033[2K{DIM}{'cota':>8}{RESET}  ◎   "
+            f"session {s_part}  ·  week {w_part}{rst_part}"
+        )
+
     _stats_tty_file = RUNDIR / "stats_tty"
     _stats_tty = _stats_tty_file.read_text().strip() if _stats_tty_file.exists() else ""
     if _stats_tty:
         try:
+            _cache_part = f"  ⚡{_fmt_tok(cache_read_tokens)}" if cache_read_tokens > 500 else ""
             turn_line = (
                 f"\r\033[2K{DIM}{_ts()}{RESET}  🔢  "
                 f"{_fmt_tok(input_tokens)} in · {_fmt_tok(output_tokens)} out · "
-                f"{elapsed:.1f}s · {_fmt_cost(_cost_turn)}"
+                f"{elapsed:.1f}s · {_fmt_cost(_cost_turn)}{_cache_part}"
             )
             total_line = (
                 f"\r\033[2K{DIM}{'sessão':>8}{RESET}  ∑   "
@@ -431,12 +462,47 @@ def run_turn(client, message, images=None):
                 f"{_fmt_tok(client._total_output_tokens)} out · "
                 f"{client._total_elapsed:.0f}s · {_fmt_cost(client._total_cost)}"
             )
-            content = "\033[H" + turn_line + "\n" + total_line
+            _ctx_max  = _model_ctx_window(model_name)
+            _bar, _pct = _ctx_bar(input_tokens, _ctx_max)
+            if _pct >= 0.85:
+                _bar_col = '\033[91m'
+            elif _pct >= 0.70:
+                _bar_col = YELLOW
+            else:
+                _bar_col = DIM
+            ctx_line = (
+                f"\r\033[2K{DIM}{'ctx':>8}{RESET}  ▦   "
+                f"{_bar_col}{_bar}{RESET}  "
+                f"{_pct*100:.0f}%  {_fmt_tok(input_tokens)}/{_fmt_tok(_ctx_max)}"
+            )
+            quota_line = _quota_line(getattr(client, '_last_usage', None))
+            content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
             _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
             os.write(_fd2, content.encode())
             os.close(_fd2)
         except OSError:
             pass
+
+    def _bg_usage():
+        result = fetch_usage()
+        if not result:
+            return
+        client._last_usage = result
+        client._last_usage_at = time.time()
+        if _stats_tty:
+            try:
+                # cota é a 4ª (última) linha do pane; repinta só ela
+                line = "\033[4;1H" + _quota_line(result)
+                _fd = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
+                os.write(_fd, line.encode())
+                os.close(_fd)
+            except OSError:
+                pass
+
+    # /usage spawna um claude; só refaz se o cache passou de 5 min
+    _usage_age = time.time() - getattr(client, '_last_usage_at', 0)
+    if _stats_tty and _usage_age > 300:
+        threading.Thread(target=_bg_usage, daemon=True).start()
 
     proc.wait()
     if thinking_autoresize and thinking_lines > _idle_lines:

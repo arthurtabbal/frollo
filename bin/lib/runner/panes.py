@@ -43,18 +43,23 @@ def _pane_resize(tmux_srv, pane_file, lines):
         pass
 
 
+_STATS_LINES = 4  # keep in sync with frollo.sh _STATS_LINES
+
+
 def _resize_thinking(tmux_srv, size):
     """Redimensiona o pane thinking. size: 'idle'|'summary' ou int linhas."""
     if not tmux_srv or not THINKING_PANE.exists():
         return
     rows        = _window_height(tmux_srv)
-    tools_lines = max(6, int(rows * 0.26))
-    stats_lines = 2
+    has_stats   = STATS_PANE.exists()
+    tools_lines = max(6, int(rows * 0.26) - (_STATS_LINES if has_stats else 0))
     if isinstance(size, int):
-        _pane_resize(tmux_srv, STATS_PANE, stats_lines)
+        if has_stats:
+            _pane_resize(tmux_srv, STATS_PANE, _STATS_LINES)
         _pane_resize(tmux_srv, THINKING_PANE, size)
     else:
         lines = {"idle": max(8, int(rows * 0.16)), "summary": max(5, int(rows * 0.10))}[size]
         _pane_resize(tmux_srv, TOOLS_PANE, tools_lines)
-        _pane_resize(tmux_srv, STATS_PANE, stats_lines)
+        if has_stats:
+            _pane_resize(tmux_srv, STATS_PANE, _STATS_LINES)
         _pane_resize(tmux_srv, THINKING_PANE, lines)

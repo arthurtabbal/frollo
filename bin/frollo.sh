@@ -51,6 +51,16 @@ trap cleanup EXIT
 COLS=$(tput cols 2>/dev/null || echo 220)
 ROWS=$(tput lines 2>/dev/null || echo 50)
 
+# Número fixo de linhas do pane de stats — deve ser igual ao número de linhas
+# de conteúdo escritas em runner/__init__.py (turn · sessão · ctx · cota).
+_STATS_LINES=4
+
+# Altura dos panes inferiores (tools + terminal): base 26%, menos _STATS_LINES
+# quando stats está ativo — para compensar o espaço ocupado pelo pane.
+_BOTTOM=$(( ROWS * 26 / 100 ))
+[[ "$_show_stats" == "true" ]] && _BOTTOM=$(( _BOTTOM - _STATS_LINES ))
+[ "$_BOTTOM" -lt 5 ] && _BOTTOM=5
+
 # Editor: detecta antes de criar os panes (CLAUDE_EDITOR_BIN precisa estar definido)
 if command -v nvim >/dev/null 2>&1; then
     _editor_bin="nvim"
@@ -69,15 +79,15 @@ tmux -L "$SRV" split-window -h -l "40%" -t "$P_LEFT" \
     "cd '$PROJ_DIR' && CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
 P_CHAT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
-# Tools: base da coluna direita (26% do total — calibrado pelo layout manual)
-tmux -L "$SRV" split-window -v -l "26%" -t "$P_CHAT" \
+# Tools: base da coluna direita (_BOTTOM linhas, calculado acima)
+tmux -L "$SRV" split-window -v -l "$_BOTTOM" -t "$P_CHAT" \
     "tail -n 0 -f $RUNDIR/tools 2>/dev/null; exec \$SHELL"
 P_TOOLS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 tmux -L "$SRV" display-message -t "$P_TOOLS" -p "#{pane_tty}" > "$RUNDIR/tools_tty"
 
-# Stats: exatamente 2 linhas, entre chat e tools (omitido se desativado na config)
+# Stats: $_STATS_LINES linhas (turn · sessão · ctx/window · cota), entre chat e tools
 if [[ "$_show_stats" == "true" ]]; then
-    tmux -L "$SRV" split-window -v -l 2 -t "$P_CHAT" \
+    tmux -L "$SRV" split-window -v -l "$_STATS_LINES" -t "$P_CHAT" \
         "stty -echo; tail -n 0 -f /dev/null"
     P_STATS=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
     tmux -L "$SRV" display-message -t "$P_STATS" -p "#{pane_tty}" > "$RUNDIR/stats_tty"
@@ -101,8 +111,8 @@ echo "$P_CHAT"     > "$RUNDIR/chat_pane"
 echo "$P_TOOLS"    > "$RUNDIR/tools_pane"
 [[ "$_show_stats" == "true" ]] && echo "$P_STATS" > "$RUNDIR/stats_pane"
 
-# Coluna esquerda: terminal na base (26% — alinhado com tools)
-tmux -L "$SRV" split-window -v -l "26%" -t "$P_LEFT" \
+# Coluna esquerda: terminal na base (_BOTTOM linhas — alinhado com tools)
+tmux -L "$SRV" split-window -v -l "$_BOTTOM" -t "$P_LEFT" \
     "cd '$PROJ_DIR' && exec \$SHELL"
 P_TERMINAL=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
