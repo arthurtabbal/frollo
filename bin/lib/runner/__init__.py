@@ -500,9 +500,7 @@ def run_turn(client, message, images=None):
             except OSError:
                 pass
 
-    # /usage spawna um claude; só refaz se o cache passou de 5 min
-    _usage_age = time.time() - getattr(client, '_last_usage_at', 0)
-    if _stats_tty and _usage_age > 300:
+    if _stats_tty:
         threading.Thread(target=_bg_usage, daemon=True).start()
 
     proc.wait()
