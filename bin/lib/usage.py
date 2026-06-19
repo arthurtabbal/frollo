@@ -5,15 +5,12 @@ import subprocess
 def fetch_usage(timeout=20.0):
     """
     Runs `claude -p /usage` and parses the plain-text quota report.
-
-    Print mode (`-p`) skips the workspace-trust dialog and the external
-    CLAUDE.md import prompt that otherwise block an interactive session —
-    so no PTY/fork dance is needed. `/usage` is a local slash command, so
-    this costs no model tokens. Returns a dict or None on failure.
+    `--no-session-persistence` prevents this call from creating a session
+    entry that --continue would include in the next turn's context.
     """
     try:
         proc = subprocess.run(
-            ["claude", "-p", "/usage"],
+            ["claude", "-p", "--no-session-persistence", "/usage"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError):

@@ -476,7 +476,7 @@ def run_turn(client, message, images=None):
                 f"{_bar_col}{_bar}{RESET}  "
                 f"{_pct*100:.0f}%  {_fmt_tok(_ctx_used)}/{_fmt_tok(_ctx_max)}"
             )
-            quota_line = _quota_line(getattr(client, '_last_usage', None))
+            quota_line = _quota_line(None)
             content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
             _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
             os.write(_fd2, content.encode())
