@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner import run_turn
+from lib.runner import run_turn, _parse_rate_limit_line
 from lib.theme import THINKING_FG
 
 
@@ -63,6 +63,7 @@ def _run_stream(fake_client, lines, config_override=None):
     """
     proc = MagicMock()
     proc.stdout = _FakeStdout([l + "\n" for l in lines])
+    proc.stderr = _FakeStdout([])  # EOF imediato — thread _stderr_reader não deve rodar solta
     proc.wait.return_value = 0
 
     # totais numéricos reais (MagicMock ignora o default do getattr)
@@ -163,3 +164,29 @@ class TestAutoResizeDesligado:
         )
         assert resize_calls == []           # nenhum resize
         assert any("9 survive" in t for t in anim_calls)  # mas o texto ainda renderiza
+
+
+class TestParseRateLimitLine:
+    """_parse_rate_limit_line — função pura extraída do parsing textual de stderr."""
+
+    def test_linha_sem_rate_limit_retorna_none(self):
+        assert _parse_rate_limit_line("some regular stderr noise") is None
+
+    def test_linha_vazia_retorna_none(self):
+        assert _parse_rate_limit_line("") is None
+
+    def test_hit_your_limit_sem_horario(self):
+        result = _parse_rate_limit_line("Claude AI usage limit reached, you hit your limit")
+        assert result is not None
+        assert result["reset_str"] is None
+        assert "hit your limit" in result["msg"]
+
+    def test_extrai_horario_de_reset_am(self):
+        result = _parse_rate_limit_line("5-hour limit reached ∙ resets 3:00am")
+        assert result is not None
+        assert result["reset_str"] is not None
+
+    def test_extrai_horario_de_reset_pm(self):
+        result = _parse_rate_limit_line("Your limit resets 11:45pm")
+        assert result is not None
+        assert result["reset_str"] is not None

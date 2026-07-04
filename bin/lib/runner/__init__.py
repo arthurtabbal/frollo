@@ -35,6 +35,28 @@ from ..tools import RUNDIR
 from .. import config
 
 
+def _parse_rate_limit_line(raw):
+    """Função pura: extrai info de rate-limit de uma linha textual de stderr.
+    Retorna {'reset_str': str|None, 'msg': str} se a linha indicar rate-limit, senão None."""
+    if not raw:
+        return None
+    rl_match = re.search(r'resets?\s+(\d{1,2}:\d{2}(?:am|pm))', raw, re.IGNORECASE)
+    if not (rl_match or "hit your limit" in raw.lower()):
+        return None
+    reset_str = None
+    if rl_match:
+        try:
+            t = datetime.strptime(rl_match.group(1).lower(), "%I:%M%p")
+            now = datetime.now()
+            reset = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            if reset <= now:
+                reset += timedelta(days=1)
+            reset_str = reset.strftime("%H:%M" if reset.date() == now.date() else "%d/%m %H:%M")
+        except ValueError:
+            pass
+    return {"reset_str": reset_str, "msg": raw}
+
+
 def run_turn(client, message, images=None):
     """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
     reset_col()
@@ -74,7 +96,7 @@ def run_turn(client, message, images=None):
             cmd,
             stdout=subprocess.PIPE,
             stdin=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8',
             errors='replace',
@@ -155,6 +177,32 @@ def run_turn(client, message, images=None):
         result_cost       = None
         result_in_tok     = None
         result_out_tok    = None
+        _rl_lock          = threading.Lock()
+
+        def _stderr_reader():
+            """Lê stderr (canal separado do stdout JSON) linha a linha, appenda em
+            stderr.log e faz o parsing textual de rate-limit ali — o stdout deixa
+            de precisar tratar linhas não-JSON como caminho esperado."""
+            nonlocal rate_limited, rate_limit_ts, rate_limit_reset_str, rate_limit_msg
+            stderr_log = RUNDIR / "stderr.log"
+            for raw in iter(proc.stderr.readline, ''):
+                with open(stderr_log, "a") as f:
+                    f.write(raw)
+                line = raw.strip()
+                if not line:
+                    continue
+                parsed = _parse_rate_limit_line(line)
+                with _rl_lock:
+                    if parsed:
+                        if not rate_limited:
+                            rate_limited = True
+                            rate_limit_ts = time.time()
+                        if parsed["reset_str"] and not rate_limit_reset_str:
+                            rate_limit_reset_str = parsed["reset_str"]
+                    elif rate_limited:
+                        rate_limit_msg = line
+
+        threading.Thread(target=_stderr_reader, daemon=True).start()
 
         def _show_status():
             nonlocal fire_frame, spinner_shown
@@ -210,25 +258,10 @@ def run_turn(client, message, images=None):
                 try:
                     event = json.loads(raw)
                 except json.JSONDecodeError:
-                    with open(RUNDIR / "rate-limit.log", "a") as _rl:
-                        _rl.write(f"non-json: {raw}\n")
-                    _rl_match = re.search(r'resets?\s+(\d{1,2}:\d{2}(?:am|pm))', raw, re.IGNORECASE)
-                    if _rl_match or "hit your limit" in raw.lower():
-                        if not rate_limited:
-                            rate_limited = True
-                            rate_limit_ts = time.time()
-                        if _rl_match and not rate_limit_reset_str:
-                            try:
-                                _t    = datetime.strptime(_rl_match.group(1).lower(), "%I:%M%p")
-                                _now  = datetime.now()
-                                _reset = _now.replace(hour=_t.hour, minute=_t.minute, second=0, microsecond=0)
-                                if _reset <= _now:
-                                    _reset += timedelta(days=1)
-                                rate_limit_reset_str = _reset.strftime("%H:%M" if _reset.date() == _now.date() else "%d/%m %H:%M")
-                            except ValueError:
-                                pass
-                    elif rate_limited:
-                        rate_limit_msg = raw
+                    # stderr agora é um canal separado (_stderr_reader) — uma linha
+                    # não-JSON no stdout é anomalia, não caminho esperado.
+                    with open(RUNDIR / "stdout-anomalies.log", "a") as _an:
+                        _an.write(f"non-json: {raw}\n")
                     continue
 
                 etype = event.get("type")
