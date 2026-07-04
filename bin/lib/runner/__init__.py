@@ -128,11 +128,17 @@ def run_turn(client, message, images=None):
     except FileNotFoundError:
         pass
 
-    # Desabilita echo durante o turno — evita que teclas apareçam no meio do typewriter.
+    # Desabilita echo e modo canônico durante o turno — evita que teclas apareçam no
+    # meio do typewriter e permite que qualquer tecla (não só Enter) acorde o select()
+    # em _typewrite (ICANON ligado só libera leitura em linhas completas). ISIG fica
+    # ligado — Ctrl+C continua cancelando o turno.
     _fd = sys.stdin.fileno()
     _old_term = termios.tcgetattr(_fd)
     _no_echo = list(_old_term)
-    _no_echo[3] &= ~termios.ECHO
+    _no_echo[3] &= ~(termios.ECHO | termios.ICANON)
+    _no_echo[6] = list(_old_term[6])  # cc é mutável e compartilhado — copia antes de mexer
+    _no_echo[6][termios.VMIN]  = 1
+    _no_echo[6][termios.VTIME] = 0
     termios.tcsetattr(_fd, termios.TCSADRAIN, _no_echo)
 
     thinking_autoresize = True
