@@ -39,6 +39,11 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
     fi
 fi
 
+_AUTH_EMAIL=""
+if command -v claude >/dev/null 2>&1; then
+    _AUTH_EMAIL=$(claude auth status --json 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
+fi
+
 SRV="claude-$$"       # servidor tmux efêmero único por invocação
 TMUX_CONF="$REPO_DIR/conf/tmux.conf"
 
@@ -121,7 +126,11 @@ tmux -L "$SRV" select-pane -t "$P_LEFT"     -T "◈ editor"
 tmux -L "$SRV" select-pane -t "$P_CHAT"     -T "▲ chat"
 tmux -L "$SRV" select-pane -t "$P_THINKING" -T "◎ thinking"
 tmux -L "$SRV" select-pane -t "$P_TOOLS"    -T "⚡ tools"
-[[ "$_show_stats" == "true" ]] && tmux -L "$SRV" select-pane -t "$P_STATS" -T "〰 stats"
+if [[ "$_show_stats" == "true" ]]; then
+    _stats_title="〰 stats"
+    [[ -n "$_AUTH_EMAIL" ]] && _stats_title="〰 stats · $_AUTH_EMAIL"
+    tmux -L "$SRV" select-pane -t "$P_STATS" -T "$_stats_title"
+fi
 tmux -L "$SRV" select-pane -t "$P_TERMINAL" -T "$ terminal"
 
 # Arte ASCII inicial — céu noturno (thinking) e Paris urbana (tools)
@@ -205,7 +214,13 @@ _river() {
    ~ ~~~~~~~~ ~ ~ ~~ ~ ~ ~ ~ ~~~ \___\    ~~ ~~  ~~ ~ ~~ ~ ~~~~ ~ ~~
 RIVEREOF
 }
-[[ "$_show_stats" == "true" ]] && { printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
+_is_resume=false
+for _arg in "$@"; do
+    [[ "$_arg" == "--resume" || "$_arg" == "-r" ]] && _is_resume=true
+done
+if [[ "$_show_stats" == "true" && "$_is_resume" == "false" ]]; then
+    { printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
+fi
 
 # Paris urbana — cores noturnas, janelas com padrão acesa/apagada
 _paris() {
