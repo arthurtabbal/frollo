@@ -532,7 +532,13 @@ def run_turn(client, message, images=None):
             except OSError:
                 pass
 
-        def _bg_usage():
+        # Contador de geração: turnos rápidos consecutivos disparam _bg_usage threads
+        # que podem terminar fora de ordem. Cada uma captura a geração no início e só
+        # repinta a linha 4 se ainda for a corrente — evita cota stale por cima da fresca.
+        client._usage_gen = getattr(client, '_usage_gen', 0) + 1
+        _my_usage_gen = client._usage_gen
+
+        def _bg_usage(_gen):
             result = fetch_usage()
             if not result:
                 return
@@ -543,7 +549,7 @@ def run_turn(client, message, images=None):
                 _quota_file.write_text(json.dumps(result))
             except Exception:
                 pass
-            if _stats_tty:
+            if _stats_tty and getattr(client, '_usage_gen', 0) == _gen:
                 try:
                     # cota é a 4ª (última) linha do pane; repinta só ela
                     line = "\033[4;1H" + _render_quota_line(result)
@@ -554,7 +560,7 @@ def run_turn(client, message, images=None):
                     pass
 
         if _stats_tty:
-            threading.Thread(target=_bg_usage, daemon=True).start()
+            threading.Thread(target=_bg_usage, args=(_my_usage_gen,), daemon=True).start()
 
         proc.wait()
     finally:
