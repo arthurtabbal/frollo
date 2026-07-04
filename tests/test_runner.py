@@ -82,13 +82,15 @@ def _run_stream(fake_client, lines, config_override=None):
     try:
         with patch("lib.runner.subprocess.Popen", return_value=proc), \
              patch("lib.runner.RUNDIR", rundir), \
+             patch("lib.runner.turn.RUNDIR", rundir), \
              patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
              patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
              patch("lib.runner.termios.tcsetattr"), \
              patch("lib.runner.config.load", return_value=cfg), \
              patch("lib.runner._resize_thinking", side_effect=lambda srv, size: resize_calls.append(size)), \
-             patch("lib.runner._log", side_effect=lambda path, text: log_calls.append(text)), \
-             patch("lib.runner.log_animated", side_effect=lambda path, text, **kw: anim_calls.append(text)), \
+             patch("lib.runner.turn._resize_thinking", side_effect=lambda srv, size: resize_calls.append(size)), \
+             patch("lib.runner.turn._log", side_effect=lambda path, text: log_calls.append(text)), \
+             patch("lib.runner.turn.log_animated", side_effect=lambda path, text, **kw: anim_calls.append(text)), \
              patch.object(sys, "stdin", devnull):
             run_turn(fake_client, "oi")
     finally:

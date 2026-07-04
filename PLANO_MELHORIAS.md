@@ -123,21 +123,29 @@ prática é Enter.
 
 ## Fase 2 — Refactor do `run_turn` (destrava 3 e 4)
 
-`run_turn` é uma god-function de ~500 linhas com ~30 variáveis de estado e closures aninhadas — e é
-exatamente a parte sem teste (os 84 testes cobrem a periferia; o loop de eventos, permissões e
-rate-limit não têm cobertura).
+**✅ Concluída** — 131 testes passando (121 anteriores + 10 novos em `test_turn.py`).
+
+`run_turn` era uma god-function de ~500 linhas com ~30 variáveis de estado e closures aninhadas — e
+era exatamente a parte sem teste (os testes cobriam a periferia; o loop de eventos, permissões e
+rate-limit não tinham cobertura direta).
 
 ### 2.1 Extrair a máquina de estados do turno — novo `lib/runner/turn.py`
-- Classe `Turn` com o estado que hoje são ~30 variáveis locais (tokens, rate-limit, thinking, `md_buf`,
-  flags de bloco) e `handle_event(event)` com dispatch por `type`/`event.type` — cada branch vira método.
-- `run_turn` encolhe para: montar `cmd`, spawn, loop `select` → `turn.handle_line(raw)`, finalize
+**✅**
+- Classe `Turn` com o estado que antes eram ~30 variáveis locais (tokens, rate-limit, thinking, `md_buf`,
+  flags de bloco) e `handle_event(event)` com dispatch por `type`/`event.type` — cada branch virou método
+  (`_handle_stream_event`, `_handle_content_block_delta`, `_handle_content_block_stop`,
+  `_handle_assistant`, `_handle_user`, `_handle_result`, `_handle_rate_limit_event`).
+- `run_turn` encolheu para: montar `cmd`, spawn, loop `select` → `turn.handle_line(raw)`, finalize
   (stats, cota, restore). `try/finally` do termios e do pane permanecem.
-- **Sem mudança de comportamento** — transplante, não redesign. Diff deve ser reviewável nesse espírito.
+- Transplante, não redesign — mesma ordem de operações e mesmos efeitos colaterais de antes.
+- `tests/test_runner.py` ajustado: patches de `_log`/`log_animated`/`_resize_thinking`/`RUNDIR` que
+  antes miravam `lib.runner.*` agora também miram `lib.runner.turn.*`, onde a lógica passou a viver.
 
 ### 2.2 Testes do dispatcher — `tests/test_turn.py`
+**✅**
 - Eventos sintéticos (`message_start`, `thinking_delta`, `text_delta`, `tool_use`, `tool_result` com
   erro de permissão, `result`, `rate_limit_event`) no `Turn` com render mockado; asserts sobre estado
-  e chamadas. Cobertura que hoje não existe sobre a parte mais crítica.
+  e chamadas. Cobertura direta que antes não existia sobre a parte mais crítica.
 
 ---
 
