@@ -24,7 +24,7 @@ from .panes import (
     THINKING_LOG, THINKING_PANE, STATS_PANE, TOOLS_PANE,
     _window_height, _resize_thinking,
 )
-from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request
+from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request, _write_stdin
 from .stats import (
     _model_price, _fmt_cost, _model_ctx_window, _fmt_tok,
     _render_quota_line, _render_ctx_line, _render_turn_line, _render_total_line,
@@ -395,8 +395,7 @@ def run_turn(client, message, images=None):
                     _clear_status()
                     approved = _handle_permission(event, proc)
                     if not approved:
-                        proc.stdin.write("n\n")
-                        proc.stdin.flush()
+                        _write_stdin(proc, "n\n")
 
                 elif etype == "result":
                     sid = event.get("session_id")

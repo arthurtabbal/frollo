@@ -367,6 +367,9 @@ class ClaudeClient:
                 err_log = RUNDIR / "err.log"
                 with open(err_log, "a") as f:
                     f.write(err)
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc.wait()
                 print(f"\n{YELLOW}erro inesperado (ver {err_log}):{RESET} {e}\n")
                 continue
 
