@@ -180,3 +180,28 @@ class TestHistorico:
 
         # ↑ não deve fazer nada
         assert not (r._history and hist_idx > 0)
+
+
+class TestPromptProvider:
+    """prompt_provider permite ao chamador (ClaudeClient) incluir badges extras
+    (ex: modelo) no prompt; _vprompt deve refletir a largura visual real."""
+
+    def test_sem_provider_usa_default(self):
+        mode = MagicMock(value="normal")
+        r = InputReader([mode])
+        assert r._vprompt() == "(normal) >_ "
+
+    def test_com_provider_usa_texto_do_provider(self):
+        mode = MagicMock(value="normal")
+        r = InputReader([mode], prompt_provider=lambda: "\x1b[35msonnet\x1b[0m (normal) >_ ")
+        assert r._vprompt() == "sonnet (normal) >_ "
+
+    def test_vprompt_muda_com_o_provider_mesmo_modo(self):
+        """Badge de modelo muda a largura mesmo sem o modo mudar — cursor tem que
+        acompanhar, senão desalinha (bug que este item corrige)."""
+        mode = MagicMock(value="normal")
+        r = InputReader([mode], prompt_provider=lambda: "\x1b[35mopus\x1b[0m (normal) >_ ")
+        vprompt_curto = r._vprompt()
+        r._prompt_provider = lambda: "\x1b[35mclaude-opus-4-5-longuinho\x1b[0m (normal) >_ "
+        vprompt_longo = r._vprompt()
+        assert len(vprompt_longo) > len(vprompt_curto)

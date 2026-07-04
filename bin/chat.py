@@ -74,7 +74,7 @@ class ClaudeClient:
         TOOLS_LOG.write_text("")
 
         self._mode_ref = [self.mode]
-        self._input_reader = InputReader(self._mode_ref)
+        self._input_reader = InputReader(self._mode_ref, prompt_provider=self._prompt)
 
     def _sync_mode(self):
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
@@ -103,7 +103,10 @@ class ClaudeClient:
             pass
 
     def _prompt(self):
-        if self.mode == Mode.AUTO:
+        # Lê _mode_ref (não self.mode) porque InputReader muda o modo ao vivo via
+        # Shift+Tab durante a edição, antes que _sync_mode() rode — self.mode ficaria
+        # um passo atrasado no meio da digitação.
+        if self._mode_ref[0] == Mode.AUTO:
             badge = f"{TOOLS_BASH}auto{RESET}"
         else:
             badge = f"{DIM}normal{RESET}"

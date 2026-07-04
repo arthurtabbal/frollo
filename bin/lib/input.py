@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import select
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import tty
 from pathlib import Path
 
 from .theme import DIM, RESET, GREEN, WHITE, BG_USER, CLEAR
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]')
 
 HISTORY_PATH = Path(os.environ.get(
     "FROLLO_HISTORY",
@@ -75,13 +78,20 @@ def _visual_pos(visible_prompt, line_chars, idx, cols):
 
 
 class InputReader:
-    def __init__(self, mode_ref):
-        """mode_ref: a mutable container [Mode] so we can cycle mode from outside."""
+    def __init__(self, mode_ref, prompt_provider=None):
+        """mode_ref: a mutable container [Mode] so we can cycle mode from outside.
+        prompt_provider: callable opcional que retorna o prompt já formatado (com
+        ANSI) — permite ao chamador (ex: ClaudeClient) incluir badges extras (modelo)
+        sem o InputReader precisar conhecê-los. Sem provider, cai no prompt default
+        (só o badge de modo)."""
         self._mode_ref = mode_ref
+        self._prompt_provider = prompt_provider
         self._history: list[str] = _load_history()
         self.pending_image = None  # {'data': b64str, 'media_type': str}
 
     def _prompt(self):
+        if self._prompt_provider:
+            return self._prompt_provider()
         mode = self._mode_ref[0]
         if mode.value == "auto":
             badge = f"{GREEN}auto{RESET}"
@@ -90,7 +100,9 @@ class InputReader:
         return f"{WHITE}({RESET}{badge}{WHITE}){RESET} {WHITE}>_{RESET} "
 
     def _vprompt(self):
-        return f"({self._mode_ref[0].value}) >_ "
+        # Largura visual real do prompt (sem ANSI) — precisa refletir o prompt_provider
+        # (que pode incluir badge de modelo) senão o cálculo de wrap/cursor desalinha.
+        return _ANSI_RE.sub('', self._prompt())
 
     def _cycle_mode(self, modes):
         idx = modes.index(self._mode_ref[0])

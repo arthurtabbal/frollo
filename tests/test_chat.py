@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from chat import ClaudeClient
+from lib.theme import DIM, RESET, WHITE
 
 
 @pytest.fixture(autouse=True)
@@ -52,3 +53,27 @@ class TestPasteEditorAusente:
             client._paste()
         out = capsys.readouterr().out
         assert "meu-editor-magico" in out
+
+
+class TestPromptBadgeDeModelo:
+    """Badge de modelo no prompt (item 1.7 do plano) — ClaudeClient._prompt é
+    religado como prompt_provider do InputReader, em vez de código morto."""
+
+    def test_input_reader_recebe_prompt_provider(self):
+        c = ClaudeClient()
+        assert c._input_reader._prompt_provider == c._prompt
+
+    def test_prompt_inclui_badge_de_modelo_quando_definido(self):
+        c = ClaudeClient(model="opus")
+        assert "opus" in c._prompt()
+
+    def test_prompt_sem_modelo_nao_inclui_badge(self):
+        c = ClaudeClient()
+        c.observed_model = ""
+        assert c._prompt() == f"{DIM}normal{RESET} {WHITE}>_{RESET} "
+
+    def test_prompt_reflete_modo_atual_via_mode_ref(self):
+        from chat import Mode
+        c = ClaudeClient()
+        c._mode_ref[0] = Mode.AUTO
+        assert "auto" in c._prompt()
