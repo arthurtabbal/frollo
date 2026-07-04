@@ -1,9 +1,17 @@
 from ..theme import DIM, RESET, YELLOW
 
+# Preços por milhão de tokens (input, output). Prefixos específicos antes do
+# genérico correspondente — dict preserva ordem de inserção e _model_price para
+# no primeiro match. claude-opus-4-1/4-0 são as versões antigas (mantêm 15/75);
+# o genérico claude-opus-4 cobre as versões novas (4.5+, incl. 4.7/4.8) a 5/25.
+# verificado jul/2026
 _MODEL_PRICES = {
-    "claude-opus-4":   (15.0, 75.0),
-    "claude-sonnet-4":  (3.0, 15.0),
-    "claude-haiku-4":  (0.80,  4.0),
+    "claude-opus-4-1":   (15.0, 75.0),
+    "claude-opus-4-0":   (15.0, 75.0),
+    "claude-opus-4":      (5.0, 25.0),
+    "claude-sonnet-4":    (3.0, 15.0),
+    "claude-haiku-4-5":   (1.0,  5.0),
+    "claude-haiku-4":    (0.80,  4.0),
 }
 
 _MODEL_CTX = {
