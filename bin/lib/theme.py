@@ -94,6 +94,9 @@ _GLOW = [
 ]
 
 
+_MD_BUFFER_CAP = 2000  # chars acumulados antes de forçar flush mesmo desbalanceado
+
+
 class MdBuffer:
     """Acumula chunks de streaming até que todos os spans markdown estejam fechados."""
 
@@ -101,9 +104,14 @@ class MdBuffer:
         self._buf = ""
 
     def feed(self, chunk: str) -> str:
-        """Recebe chunk; retorna texto processado quando spans balanceados, senão ''."""
+        """Recebe chunk; retorna texto processado quando spans balanceados, senão ''.
+
+        Um caractere solto sem par (ex: "2 * 3 = 6") nunca balanceia — sem o cap,
+        o buffer acumularia o resto inteiro da resposta e despejaria tudo de uma vez
+        no fim do bloco, matando o efeito typewriter pro resto do turno.
+        """
         self._buf += chunk
-        if self._balanced():
+        if self._balanced() or len(self._buf) > _MD_BUFFER_CAP:
             return self._flush()
         return ""
 

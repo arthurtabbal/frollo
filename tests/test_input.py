@@ -1,10 +1,12 @@
 """Testes unitários para bin/lib/input.py."""
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from unittest.mock import MagicMock
+import lib.input as input_mod
 from lib.input import _visual_pos, InputReader
 
 
@@ -83,32 +85,54 @@ class TestVisualPosWrapComNewline:
 
 
 class TestHistorico:
-    def _reader(self):
+    def _reader(self, monkeypatch):
+        # isola HISTORY_PATH num arquivo temporário — não deve ler nem escrever
+        # no histórico real do usuário durante os testes.
+        monkeypatch.setattr(input_mod, "HISTORY_PATH", Path(tempfile.mkdtemp()) / "history.json")
         mode = MagicMock()
         mode.value = "normal"
         return InputReader([mode])
 
-    def test_history_vazio_inicial(self):
-        r = self._reader()
+    def test_history_vazio_inicial(self, monkeypatch):
+        r = self._reader(monkeypatch)
         assert r._history == []
 
-    def test_history_acumula_apos_envio(self):
-        r = self._reader()
+    def test_history_persiste_em_disco(self, monkeypatch):
+        history_path = Path(tempfile.mkdtemp()) / "history.json"
+        monkeypatch.setattr(input_mod, "HISTORY_PATH", history_path)
+
+        r1 = InputReader([MagicMock(value="normal")])
+        r1._history.append("mensagem salva")
+        input_mod._save_history(r1._history)
+
+        r2 = InputReader([MagicMock(value="normal")])
+        assert r2._history == ["mensagem salva"]
+
+    def test_history_carrega_vazio_se_arquivo_corrompido(self, monkeypatch):
+        history_path = Path(tempfile.mkdtemp()) / "history.json"
+        history_path.write_text("não é json válido")
+        monkeypatch.setattr(input_mod, "HISTORY_PATH", history_path)
+
+        r = InputReader([MagicMock(value="normal")])
+        assert r._history == []
+
+    def test_history_acumula_apos_envio(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history.append("primeira mensagem")
         r._history.append("segunda mensagem")
         assert len(r._history) == 2
         assert r._history[0] == "primeira mensagem"
 
-    def test_history_persiste_entre_turnos(self):
-        r = self._reader()
+    def test_history_persiste_entre_turnos(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history.append("turno 1")
         r._history.append("turno 2")
         # simula novo read_input — hist_idx começa no fim
         hist_idx = len(r._history)
         assert hist_idx == 2
 
-    def test_navegacao_para_tras(self):
-        r = self._reader()
+    def test_navegacao_para_tras(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history = ["msg1", "msg2", "msg3"]
         hist_idx = len(r._history)  # 3
         draft = "rascunho atual"
@@ -124,8 +148,8 @@ class TestHistorico:
         hist_idx -= 1
         assert r._history[hist_idx] == "msg2"
 
-    def test_navegacao_para_frente_restaura_draft(self):
-        r = self._reader()
+    def test_navegacao_para_frente_restaura_draft(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history = ["msg1", "msg2"]
         draft = "em progresso"
         hist_idx = len(r._history)
@@ -141,16 +165,16 @@ class TestHistorico:
         result = draft_salvo if hist_idx == len(r._history) else r._history[hist_idx]
         assert result == "em progresso"
 
-    def test_navegacao_nao_vai_abaixo_do_fim(self):
-        r = self._reader()
+    def test_navegacao_nao_vai_abaixo_do_fim(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history = ["msg1"]
         hist_idx = len(r._history)  # 1 — já no fim
 
         # ↓ não deve fazer nada (hist_idx >= len)
         assert hist_idx >= len(r._history)
 
-    def test_navegacao_nao_vai_acima_do_inicio(self):
-        r = self._reader()
+    def test_navegacao_nao_vai_acima_do_inicio(self, monkeypatch):
+        r = self._reader(monkeypatch)
         r._history = ["msg1"]
         hist_idx = 0  # já no início
 

@@ -1,12 +1,35 @@
 import base64
+import json
 import os
 import select
 import subprocess
 import sys
 import termios
 import tty
+from pathlib import Path
 
 from .theme import DIM, RESET, GREEN, WHITE, BG_USER, CLEAR
+
+HISTORY_PATH = Path(os.environ.get(
+    "FROLLO_HISTORY",
+    str(Path.home() / ".config" / "frollo" / "history.json"),
+))
+_HISTORY_MAX = 500
+
+
+def _load_history():
+    try:
+        return json.loads(HISTORY_PATH.read_text())
+    except Exception:
+        return []
+
+
+def _save_history(history):
+    try:
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HISTORY_PATH.write_text(json.dumps(history[-_HISTORY_MAX:]))
+    except Exception:
+        pass
 
 
 def _get_clipboard_image():
@@ -55,7 +78,7 @@ class InputReader:
     def __init__(self, mode_ref):
         """mode_ref: a mutable container [Mode] so we can cycle mode from outside."""
         self._mode_ref = mode_ref
-        self._history: list[str] = []
+        self._history: list[str] = _load_history()
         self.pending_image = None  # {'data': b64str, 'media_type': str}
 
     def _prompt(self):
@@ -127,6 +150,7 @@ class InputReader:
             text = ''.join(line)
             if text.strip():
                 self._history.append(text)
+                _save_history(self._history)
             if pre_clear_hook:
                 pre_clear_hook(text)
             cols     = os.get_terminal_size().columns

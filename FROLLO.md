@@ -32,7 +32,7 @@ O autor tem forte ligação pessoal com a obra: foi fã da adaptação Disney de
 ./bin/layout.sh            # layout simples: claude + observer (tail -f de hooks)
 ```
 
-`install.sh` merges hooks into `~/.claude/settings.json` usando `jq -s '.[0] * .[1]'` e faz backup do original.
+`install.sh` faz merge idempotente dos hooks em `~/.claude/settings.json`: um filtro `jq` (`add_if_missing`) adiciona cada evento (`PreToolUse`/`PostToolUse`/`Stop`/`UserPromptSubmit`) só se o comando do hook ainda não estiver registrado, preservando qualquer hook que o usuário já tenha configurado — não sobrescreve o arquivo inteiro. Faz backup do original em `settings.json.bak` antes de tocar nele.
 
 ### Dependências e versões mínimas
 
@@ -98,25 +98,40 @@ bash tests/test_install_sh.sh     # testes unitários do install.sh (parsers de 
 
 O `install.sh` executa um smoke test automático ao final verificando que os artefatos críticos estão no lugar: hook executável, symlink `frollo`, hooks registrados no `settings.json` e imports Python funcionando.
 
+## Últimas features (roadmap recente)
+
+Registro das adições mais recentes para orientar navegação. Quando chegar a uma nova conversa, comece por aqui antes de explorar os arquivos.
+
+| Feature | Arquivo-chave | Detalhe |
+|---|---|---|
+| **Cota de uso (Claude Max)** | `lib/usage.py`, `lib/runner/__init__.py:503` | Thread daemon roda `claude -p --no-session-persistence /usage` após cada turno; parseia `session_pct`/`week_pct`; pinta linha 4 do stats pane. `--no-session-persistence` evita criar sessão-zumbi |
+| **Ctx bar no stats pane** | `lib/runner/stats.py:30`, `lib/runner/__init__.py:464` | Barra `█░` de 16 chars mostrando % da janela de contexto (input+cache). Cor: DIM→YELLOW→RED nos thresholds 70%/85% |
+| **Stats pane com 4 linhas** | `lib/runner/__init__.py:464` | Linha 1: turno; linha 2: sessão; linha 3: ctx bar; linha 4: cota (async). Posicionamento via `\033[H` / `\033[4;1H` no PTY. Render das 4 linhas centralizado em `lib/runner/stats.py` (`_render_turn_line`/`_render_total_line`/`_render_ctx_line`/`_render_quota_line`) — usado tanto pelo fim de turno quanto pelo `_startup_stats` de `chat.py` num resume |
+| **Custo/tokens do turno via evento `result`** | `lib/runner/__init__.py:394` | O evento `result` (fim do turno) carrega `total_cost_usd` e `usage` agregados de todos os requests à API feitos no turno — usado para custo e tokens exibidos em vez do último `message_start`, que subestimava turnos com tool calls (N tool calls = N+1 requests) |
+| **Markdown rendering no chat** | `lib/theme.py:97` (`MdBuffer`), `lib/theme.py:139` (`_render_code_block`) | `MdBuffer` acumula chunks até spans balanceados (fenced blocks, bold, italic, code). Rendering: blocos ```` ``` ```` com linguagem em DIM+CYAN, 2-space indent, inline `code` em amarelo |
+| **Soft-wrap (sem word-wrap manual)** | `lib/runner/text.py:10` | `_typewrite` não insere `\n` — deixa o terminal fazer soft-wrap. Refluí corretamente ao redimensionar |
+| **Modelo padrão: Sonnet** | `bin/chat.py` (DEFAULT_MODEL) | Mudou de Haiku → Sonnet em d0521ec; documentado na seção de modelos |
+
 ## Módulos (bin/)
 
 `runner` e `tools` são **pacotes**, não arquivos únicos. As falas das gárgulas foram externalizadas em `characters/*.json` — `gargulas.py` virou apenas o loader.
 
 | Arquivo | Linhas | Responsabilidade |
 |---|---|---|
-| `chat.py` | ~320 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
-| `lib/runner/__init__.py` | ~440 | Executa turno: subprocess claude, loop de eventos, spinner, streaming, rate-limit |
+| `chat.py` | ~420 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
+| `lib/runner/__init__.py` | ~535 | Executa turno: subprocess claude, loop de eventos, spinner, streaming, rate-limit — tudo em `try/finally` (garante restore do termios e do pane de thinking mesmo em erro/Ctrl+C) |
 | `lib/runner/panes.py` | ~60 | Redimensionamento dinâmico dos panes tmux (idle/summary/full) |
 | `lib/runner/permissions.py` | ~145 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
-| `lib/runner/stats.py` | ~16 | Preços por modelo e formatação de custo |
-| `lib/runner/text.py` | ~79 | `_typewrite` no stdout: wrap word-aware, cursor, skip por tecla |
+| `lib/runner/stats.py` | ~110 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
+| `lib/runner/text.py` | ~79 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla |
+| `lib/usage.py` | ~46 | `fetch_usage()`: roda `claude -p --no-session-persistence /usage` e parseia cota |
 | `lib/tools/__init__.py` | ~97 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
 | `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |
 | `lib/tools/nvim.py` | ~41 | Jump pro editor nvim via tmux send-keys (Read/Edit/Write) |
-| `lib/input.py` | ~254 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, histórico, paste de imagem |
+| `lib/input.py` | ~280 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, histórico persistente em disco, paste de imagem |
 | `lib/gargulas.py` | ~91 | Loader das gárgulas a partir de `characters/*.json` (valida schema e cor) |
 | `lib/typewriter.py` | ~39 | `log_animated` (typewriter em arquivos) + `_char_delay` |
-| `lib/theme.py` | ~147 | Cores ANSI, `_F` (chamas), `_GLOW` (gradiente), citações, `MdBuffer`, `_md()` |
+| `lib/theme.py` | ~170 | Cores ANSI, `_F` (chamas), `_GLOW` (gradiente), citações, `MdBuffer` (com cap de tamanho contra spans nunca-balanceados), `_md()` |
 | `lib/session.py` | ~103 | Picker interativo de sessões anteriores |
 | `lib/config.py` | ~42 | Carrega/salva `~/.config/frollo/config.json`; detecta first-run |
 | `lib/configure.py` | ~85 | Wizard de configuração (typewriter, gárgulas, stats) |
@@ -149,7 +164,7 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 
 **`/refresh`**: reinicia o processo retomando a sessão atual (`--resume`).
 
-**Input multilinha**: `Alt+Enter` insere quebra de linha. `Enter` envia. Cursor suporta ←/→, Home/End, Ctrl+A/E, ↑/↓ navega histórico, backspace atravessa newlines corretamente. `_visual_pos` modela o deferred-wrap do terminal para posicionar o cursor com wrap + multilinha.
+**Input multilinha**: `Alt+Enter` insere quebra de linha. `Enter` envia. Cursor suporta ←/→, Home/End, Ctrl+A/E, ↑/↓ navega histórico, backspace atravessa newlines corretamente. `_visual_pos` modela o deferred-wrap do terminal para posicionar o cursor com wrap + multilinha. **Histórico persiste em disco** (`~/.config/frollo/history.json`, override via `$FROLLO_HISTORY`) — carregado no início do processo e salvo a cada envio, sobrevive a `/refresh`, `/new` e reinícios do client.
 
 **Paste de imagem**: `Ctrl+V` lê imagem do clipboard (`wl-paste` no Wayland, `xclip` no X11 — stdlib + subprocess, sem Pillow), insere um marcador `[img]` e envia via `--input-format stream-json` no próximo turno.
 
@@ -163,7 +178,14 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 >
 > **Idioma do thinking (verificado jun/2026):** com prompt em português, o **Haiku pensa em português** mas o **Sonnet pensa em inglês** (mesmo contexto, mesma pergunta). Parece ser disposição do modelo, não do prompt — bônus do Haiku pra quem programa em português: o raciocínio sai no seu idioma.
 
-**Pane de stats (Rio Sena)**: ao fim de cada turno escreve tokens (in/out), tempo e custo estimado do turno + acumulado da sessão, direto no PTY do pane. Preços por modelo em `runner/stats.py`.
+**Pane de stats (Rio Sena)**: ao fim de cada turno escreve 4 linhas direto no PTY do pane:
+
+1. **turno** — timestamp, tokens in/out, tempo, custo do turno (+ cache se houver)
+2. **sessão** — total acumulado de tokens in/out, tempo e custo da sessão
+3. **ctx** — barra de progresso da janela de contexto (`░░░░░░░░░░░░░░░░`), porcentagem e tokens usados/máximo. Cor: cinza ≤70%, amarelo ≤85%, vermelho >85%
+4. **cota** — `session%` e `week%` da cota Claude Max, com data de reset. Preenchida **assincronamente** (thread daemon) via `lib/usage.py` → `claude -p --no-session-persistence /usage`. O `--no-session-persistence` é crítico: sem ele o `/usage` criaria uma entrada de sessão que apareceria no `--continue` do próximo turno.
+
+Preços e tamanhos de janela de contexto por modelo em `runner/stats.py`.
 
 **Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o Frollo usa **sonnet** por default — excelente balance entre qualidade e velocidade, com thinking summarizado visível; use Haiku (`/model haiku`) pra tarefas rápidas/baratas, ou Opus (`/model opus`) quando precisa máxima qualidade. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo. Além disso, o modelo atual fica **sempre visível no título da borda do pane de chat** (`▲ chat · <modelo>`), atualizado no startup, ao fim de cada turno e a cada `/model` — o cliente seta via `tmux select-pane -T` usando `$TMUX_PANE` (chrome do tmux, não rola com o output).
 

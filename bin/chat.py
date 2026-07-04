@@ -40,6 +40,7 @@ from lib.input import InputReader
 from lib.runner import run_turn
 from lib import config as _config
 from lib.configure import run_configure
+from lib.usage import fetch_usage
 
 RUNDIR       = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 THINKING_LOG = RUNDIR / "thinking"
@@ -200,6 +201,76 @@ class ClaudeClient:
         out_path.write_text(content)
         return content
 
+    def _startup_stats(self):
+        """No startup de um resume, restaura stats do último turno e atualiza cota async."""
+        import threading
+        import json as _json
+        from lib.runner.stats import (
+            _model_ctx_window, _render_quota_line, _render_ctx_line,
+            _render_turn_line, _render_total_line, _render_no_data_lines,
+        )
+
+        stats_tty_file = RUNDIR / "stats_tty"
+        if not stats_tty_file.exists():
+            return
+        stats_tty = stats_tty_file.read_text().strip()
+        if not stats_tty:
+            return
+
+        cfg_dir = Path.home() / ".config" / "frollo"
+
+        # ── carregar dados salvos ──────────────────────────────────────────
+        sess = {}
+        sess_file = cfg_dir / "last_session.json"
+        if sess_file.exists():
+            try: sess = _json.loads(sess_file.read_text())
+            except Exception: pass
+
+        quota = {}
+        quota_file = cfg_dir / "last_quota.json"
+        if quota_file.exists():
+            try: quota = _json.loads(quota_file.read_text())
+            except Exception: pass
+
+        # ── renderizar as 4 linhas ─────────────────────────────────────────
+        if sess:
+            turn_line = _render_turn_line(
+                sess.get('ts', ''), sess['input_tokens'], sess['output_tokens'],
+                sess['elapsed'], sess['cost_turn'], sess.get('cache_read_tokens', 0),
+            )
+            total_line = _render_total_line(
+                sess['total_input'], sess['total_output'], sess['total_elapsed'], sess['total_cost'],
+            )
+            _ctx_used = sess.get('ctx_tokens', 0)
+            _ctx_max  = sess.get('ctx_max') or _model_ctx_window(sess.get('model', ''))
+            ctx_line = _render_ctx_line(_ctx_used, _ctx_max)
+        else:
+            turn_line, total_line, ctx_line = _render_no_data_lines()
+
+        quota_line = _render_quota_line(quota)
+
+        try:
+            content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
+            fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
+            os.write(fd, content.encode())
+            os.close(fd)
+        except OSError:
+            pass
+
+        # ── atualizar cota em background ───────────────────────────────────
+        def _bg():
+            result = fetch_usage()
+            if not result:
+                return
+            try:
+                fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
+                os.write(fd, ("\033[4;1H" + _render_quota_line(result)).encode())
+                os.close(fd)
+            except OSError:
+                pass
+
+        threading.Thread(target=_bg, daemon=True).start()
+
     def chat(self):
         self._print_header()
         self._update_model_title()
@@ -209,6 +280,7 @@ class ClaudeClient:
             else:
                 sys.stdout.write(f"{CHAT_FG}retomando conversa anterior{RESET}\n\n")
             sys.stdout.flush()
+            self._startup_stats()
 
         while True:
             try:
@@ -292,9 +364,10 @@ class ClaudeClient:
             except Exception as e:
                 import traceback
                 err = traceback.format_exc()
-                with open("/tmp/claude-client-err.log", "a") as f:
+                err_log = RUNDIR / "err.log"
+                with open(err_log, "a") as f:
                     f.write(err)
-                print(f"\n{YELLOW}erro inesperado (ver /tmp/claude-client-err.log):{RESET} {e}\n")
+                print(f"\n{YELLOW}erro inesperado (ver {err_log}):{RESET} {e}\n")
                 continue
 
 
@@ -336,7 +409,8 @@ if __name__ == "__main__":
         pass
     except BaseException as e:
         err = traceback.format_exc()
-        with open("/tmp/claude-client-err.log", "w") as f:
+        RUNDIR.mkdir(exist_ok=True)
+        with open(RUNDIR / "err.log", "w") as f:
             f.write(err)
         sys.stderr.write(f"\n\nERRO FATAL: {e}\n{err}\n")
         sys.stderr.write("\nPressione Enter para fechar...\n")

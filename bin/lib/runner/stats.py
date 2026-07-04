@@ -1,3 +1,5 @@
+from ..theme import DIM, RESET, YELLOW
+
 _MODEL_PRICES = {
     "claude-opus-4":   (15.0, 75.0),
     "claude-sonnet-4":  (3.0, 15.0),
@@ -33,3 +35,75 @@ def _ctx_bar(ctx_tokens, max_tokens=200_000, width=16):
 
 def _fmt_cost(cost):
     return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
+
+
+def _fmt_tok(n):
+    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _quota_color(pct):
+    if pct is None:
+        return DIM
+    if pct >= 85:
+        return '\033[91m'
+    if pct >= 70:
+        return YELLOW
+    return DIM
+
+
+def _render_quota_line(usage):
+    """usage: dict com session_pct/week_pct/session_reset, ou None/{} se ainda não carregou."""
+    if not usage:
+        return f"\r\033[2K{DIM}{'cota':>8}  ◎   carregando…{RESET}"
+    s_pct = usage.get('session_pct')
+    w_pct = usage.get('week_pct')
+    s_rst = usage.get('session_reset', '')
+    s_part = f"{_quota_color(s_pct)}{s_pct}%{RESET}" if s_pct is not None else f"{DIM}?%{RESET}"
+    w_part = f"{_quota_color(w_pct)}{w_pct}%{RESET}" if w_pct is not None else f"{DIM}?%{RESET}"
+    rst_part = f"  {DIM}↺ {s_rst}{RESET}" if s_rst else ""
+    return (
+        f"\r\033[2K{DIM}{'cota':>8}{RESET}  ◎   "
+        f"session {s_part}  ·  week {w_part}{rst_part}"
+    )
+
+
+def _render_ctx_line(ctx_used, ctx_max):
+    bar, pct = _ctx_bar(ctx_used, ctx_max)
+    if pct >= 0.85:
+        col = '\033[91m'
+    elif pct >= 0.70:
+        col = YELLOW
+    else:
+        col = DIM
+    return (
+        f"\r\033[2K{DIM}{'ctx':>8}{RESET}  ▦   "
+        f"{col}{bar}{RESET}  "
+        f"{pct*100:.0f}%  {_fmt_tok(ctx_used)}/{_fmt_tok(ctx_max)}"
+    )
+
+
+def _render_turn_line(ts, input_tok, output_tok, elapsed, cost, cache_read_tokens=0):
+    cache_part = f"  ⚡{_fmt_tok(cache_read_tokens)}" if cache_read_tokens > 500 else ""
+    return (
+        f"\r\033[2K{DIM}{ts}{RESET}  🔢  "
+        f"{_fmt_tok(input_tok)} in · {_fmt_tok(output_tok)} out · "
+        f"{elapsed:.1f}s · {_fmt_cost(cost)}{cache_part}"
+    )
+
+
+def _render_total_line(total_input, total_output, total_elapsed, total_cost):
+    return (
+        f"\r\033[2K{DIM}{'sessão':>8}{RESET}  ∑   "
+        f"{_fmt_tok(total_input)} in · "
+        f"{_fmt_tok(total_output)} out · "
+        f"{total_elapsed:.0f}s · {_fmt_cost(total_cost)}"
+    )
+
+
+def _render_no_data_lines():
+    """3 linhas placeholder quando não há last_session.json ainda (resume sem histórico salvo)."""
+    return (
+        f"\r\033[2K{DIM}{'turno':>8}  🔢   –{RESET}",
+        f"\r\033[2K{DIM}{'sessão':>8}  ∑    –{RESET}",
+        f"\r\033[2K{DIM}{'ctx':>8}  ▦   {'░' * 16}  –{RESET}",
+    )
