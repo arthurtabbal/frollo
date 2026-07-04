@@ -70,6 +70,11 @@ Usuário digita no chat.py
 
 - Hooks são **globais** (`~/.claude/settings.json`) — o observer captura todas as sessões Claude simultaneamente. Eventos incluem `.cwd` e `.session_id` para distingui-las.
 - Log é um **arquivo único compartilhado** (`~/.claude/observer.jsonl`). `layout.sh` trunca no início (`> "$LOG"`).
+  Como hooks são globais, sessões de qualquer projeto appendam para sempre — `log.sh` rotaciona 1 geração
+  (`observer.jsonl.1`) quando o log passa de ~10MB, sob o mesmo lock. O lock usa um arquivo dedicado
+  (`observer.jsonl.lock`), não o próprio log — assim o `mv` da rotação não invalida o fd de quem já
+  segura o lock. **`tool_input` fica em plaintext no log** (inclui `command` de `Bash`, que pode conter
+  segredos) — decisão consciente: o log já é local (`~/.claude/`) e não sai da máquina.
 - Hooks usam `async: true` — nunca bloqueiam a execução do Claude.
 - Sequências ANSI são passadas ao `jq` via `--arg` com `$'\e'` bash syntax. **Não** embuti-las como literais no filtro jq.
 - **Stop e UserPromptSubmit são exibidos** no observer (`◀` muted e `▶`), dando início e fim de cada interação no stream. (Versões antigas suprimiam Stop por ruído; hoje ele entra como linha discreta.)
@@ -139,7 +144,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `frollo.sh` | ~240 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana) |
 | `observe.sh` | ~87 | Viewer do observer passivo (jq + tail) |
 | `layout.sh` | ~26 | Layout simples: claude + observer lado a lado |
-| `hooks/log.sh` | 11 | Coração do sistema — `jq -c` + `flock` + `tee -a` |
+| `hooks/log.sh` | ~20 | Coração do sistema — `jq -c` + `flock` (lockfile dedicado) + rotação a 10MB |
 
 Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto. As quimeras dominam a base numericamente — nenhuma delas faz algo computacionalmente útil. Adicionar uma quarta gárgula é só criar um novo JSON com `name`, `color` e `falas`; nenhum código muda.
 
@@ -262,7 +267,7 @@ Absurdamente robusto comparado ao que muita gente faria (websocket, daemon, TUI 
 
 **Typewriter não é cosmético** — altera percepção cognitiva do agente. Combinado com pauses, hesitation, gargoyle commentary e thinking separation, transforma o Claude de bloco monolítico de texto em entidade processual observável.
 
-**Concorrência no JSONL: resolvida.** `hooks/log.sh` usa `flock "$LOG" tee -a "$LOG"` para serializar writes de múltiplas sessões simultâneas — sem interleaving. Alternativas mais pesadas (pipe dedicado, unix socket, sqlite WAL) não são necessárias no momento.
+**Concorrência no JSONL: resolvida.** `hooks/log.sh` usa `flock` sobre um lockfile dedicado (`observer.jsonl.lock`) para serializar writes de múltiplas sessões simultâneas — sem interleaving, e sobrevivendo à rotação do log (que faz `mv` do arquivo de dados, não do lock). Alternativas mais pesadas (pipe dedicado, unix socket, sqlite WAL) não são necessárias no momento.
 
 ---
 

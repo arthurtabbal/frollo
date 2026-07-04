@@ -1,5 +1,6 @@
 """Teste de integração para hooks/log.sh — serialização concorrente com flock."""
 import json
+import re
 import subprocess
 import tempfile
 import threading
@@ -44,5 +45,27 @@ def test_writes_serializados_sem_corrupcao():
                 obj = json.loads(line)
                 assert "id" in obj
                 assert "_ts" in obj
+                # ISO completo (%F %T) — não só HH:MM:SS
+                assert re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', obj["_ts"]), obj["_ts"]
             except json.JSONDecodeError as e:
                 raise AssertionError(f"linha {i} corrompida: {line!r}") from e
+
+
+def test_rotaciona_quando_log_excede_tamanho_maximo():
+    """Log > ~10MB deve virar observer.jsonl.1 antes do append seguinte."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        claude_dir = Path(tmpdir) / ".claude"
+        claude_dir.mkdir()
+        log_file = claude_dir / "observer.jsonl"
+        log_file.write_bytes(b"x" * (11 * 1024 * 1024))  # > MAX_SIZE
+
+        _run({"id": "novo"}, tmpdir)
+
+        rotated = claude_dir / "observer.jsonl.1"
+        assert rotated.exists()
+        assert rotated.stat().st_size >= 11 * 1024 * 1024
+
+        lines = log_file.read_text().splitlines()
+        assert len(lines) == 1
+        obj = json.loads(lines[0])
+        assert obj["id"] == "novo"

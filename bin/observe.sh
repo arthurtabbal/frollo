@@ -39,7 +39,7 @@ tail -n 0 -f "$LOG" | jq -r --unbuffered \
   (.cwd | split("/") | last) as $proj |
 
   if .hook_event_name == "PreToolUse" then
-    dim(._ts) + "  " + grey("[" + $proj + "]") + "  " + (
+    dim(._ts[11:19]) + "  " + grey("[" + $proj + "]") + "  " + (
       if .tool_name == "Bash" then
         green("⚡") + "  " + (
           if .tool_input.description and (.tool_input.description | length) > 0
@@ -69,17 +69,17 @@ tail -n 0 -f "$LOG" | jq -r --unbuffered \
     )
 
   elif .hook_event_name == "PostToolUse" and .tool_name == "Bash" then
-    dim(._ts) + "  " + grey("[" + $proj + "]") + "  " + grey("└─") + "  " + (
+    dim(._ts[11:19]) + "  " + grey("[" + $proj + "]") + "  " + grey("└─") + "  " + (
       (.duration_ms | duration) +
       (if (.tool_response.stderr // "") != "" then "  " + yellow("⚠") else "" end)
     )
 
   elif .hook_event_name == "UserPromptSubmit" then
-    dim(._ts) + "  " + grey("[" + $proj + "]") + "  " + white("▶") + "  " +
+    dim(._ts[11:19]) + "  " + grey("[" + $proj + "]") + "  " + white("▶") + "  " +
     white((.prompt // "") | gsub("\n"; " ") | if length > 120 then .[0:120] + "…" else . end)
 
   elif .hook_event_name == "Stop" then
-    dim(._ts) + "  " + grey("[" + $proj + "]") + "  " + muted("◀") + "  " +
+    dim(._ts[11:19]) + "  " + grey("[" + $proj + "]") + "  " + muted("◀") + "  " +
     muted(((.last_assistant_message // "") | gsub("\n"; " ") | if length > 120 then .[0:120] + "…" else . end))
 
   else empty
