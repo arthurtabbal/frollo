@@ -175,6 +175,15 @@ class TestResult:
         assert turn.result_in_tok == 100
         assert turn.result_out_tok == 50
 
+    def test_marca_turn_done(self, fake_client):
+        # 'result' delimita o fim do turno (Fase 4) -- em processo persistente o
+        # processo não fecha stdout sozinho, run_turn depende desse flag pra parar
+        # de ler em vez de esperar EOF.
+        turn = _turn(fake_client)
+        assert turn.turn_done is False
+        turn.handle_event({"type": "result", "session_id": "sess-123"})
+        assert turn.turn_done is True
+
 
 class TestRateLimitEvent:
     def test_marca_rate_limited_e_calcula_retry(self, fake_client, tmp_path):

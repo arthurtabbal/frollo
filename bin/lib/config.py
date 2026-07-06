@@ -12,6 +12,7 @@ DEFAULTS: dict = {
     "gargoyles":  True,
     "stats_pane": True,
     "thinking_autoresize": True,
+    "persistent": False,
 }
 
 _cache: dict | None = None

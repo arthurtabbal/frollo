@@ -37,7 +37,7 @@ def _short_model(name):
 MODEL_ALIASES = ("opus", "sonnet", "haiku")
 from lib.session import pick_session
 from lib.input import InputReader
-from lib.runner import run_turn
+from lib.runner import run_turn, _terminate_proc
 from lib import config as _config
 from lib.configure import run_configure
 from lib.usage import fetch_usage
@@ -329,6 +329,10 @@ class ClaudeClient:
                 if user_input.strip() == "/new":
                     sys.stdout.write(f"{DIM}novo contexto…{RESET}\n")
                     sys.stdout.flush()
+                    # execvp substitui a imagem do processo sem rodar cleanup Python —
+                    # em modo persistente self.proc pode seguir vivo (é o propósito da
+                    # Fase 4); sem isso viraria órfão escrevendo num stdin sem leitor.
+                    _terminate_proc(self.proc)
                     argv = sys.argv[:]
                     if "--resume" in argv:
                         i = argv.index("--resume")
@@ -341,6 +345,7 @@ class ClaudeClient:
                         continue
                     sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
                     sys.stdout.flush()
+                    _terminate_proc(self.proc)
                     os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
                 sys.stdout.write('\n')
                 sys.stdout.flush()
@@ -362,6 +367,7 @@ class ClaudeClient:
                 sys.stdout.flush()
                 continue
             except EOFError:
+                _terminate_proc(self.proc)
                 print(f"\n{DIM}saindo...{RESET}")
                 break
             except Exception as e:

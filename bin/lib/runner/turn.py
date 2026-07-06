@@ -56,6 +56,7 @@ class Turn:
         self.spinner_shown = False
         self._suppress_perm_text = False
         self.perm_approved = False
+        self.turn_done = False
         self.rate_limited = False
         self.rate_limit_ts = 0.0
         self.rate_limit_retry = 0
@@ -327,6 +328,10 @@ class Turn:
         if _r_usage:
             self.result_in_tok  = _r_usage.get("input_tokens")
             self.result_out_tok = _r_usage.get("output_tokens")
+        # 'result' delimita o fim do turno no protocolo -- em processo persistente
+        # (Fase 4) o processo continua vivo e não fecha stdout sozinho depois disso,
+        # então o loop de ingestão em run_turn não pode esperar EOF.
+        self.turn_done = True
 
     def _handle_rate_limit_event(self, event):
         self.rate_limited  = True

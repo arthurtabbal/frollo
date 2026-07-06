@@ -48,12 +48,74 @@ def _parse_rate_limit_line(raw):
     return {"reset_str": reset_str, "msg": raw}
 
 
-def run_turn(client, message, images=None):
-    """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
-    reset_col()
-    client._last_response_text = ""
-    has_images = bool(images)
-    clean_text = message.replace('[img]', '').strip() if has_images else message
+def _stderr_reader(proc, client, rl_lock):
+    """Lê stderr (canal separado do stdout JSON) linha a linha, appenda em
+    stderr.log e faz o parsing textual de rate-limit ali — o stdout deixa de
+    precisar tratar linhas não-JSON como caminho esperado.
+
+    Roda pela vida inteira do processo `claude` (não só de um turno): em modo
+    persistente o mesmo processo atende vários turnos, então lê `client._current_turn`
+    a cada linha em vez de fechar sobre um Turn fixo."""
+    stderr_log = RUNDIR / "stderr.log"
+    for raw in iter(proc.stderr.readline, ''):
+        with open(stderr_log, "a") as f:
+            f.write(raw)
+        line = raw.strip()
+        if not line:
+            continue
+        turn = client._current_turn
+        if turn is None:
+            continue
+        parsed = _parse_rate_limit_line(line)
+        with rl_lock:
+            if parsed:
+                if not turn.rate_limited:
+                    turn.rate_limited = True
+                    turn.rate_limit_ts = time.time()
+                if parsed["reset_str"] and not turn.rate_limit_reset_str:
+                    turn.rate_limit_reset_str = parsed["reset_str"]
+            elif turn.rate_limited:
+                turn.rate_limit_msg = line
+
+
+def _terminate_proc(proc, timeout=3.0):
+    """Encerra um processo claude (usado sobretudo no modo persistente — Fase 4).
+
+    Achado do spike de protocolo (PLANO_MELHORIAS.md 4.1): um processo que ficou vivo
+    entre vários turnos não sai sozinho só porque o stdin fechou (bug conhecido,
+    issue #25629) — precisa de SIGTERM com timeout e SIGKILL de reserva."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if proc.stdin and not proc.stdin.closed:
+            proc.stdin.close()
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def _ensure_proc(client, persistent):
+    """Devolve um processo claude pronto pra receber a mensagem do turno.
+
+    Modo per-turn (default): sempre spawna um processo novo — comportamento
+    inalterado desde antes da Fase 4.
+    Modo persistente (`persistent: true`): reaproveita `client.proc` entre turnos
+    enquanto ele seguir vivo e tiver sido spawnado com o mesmo modo/modelo; troca de
+    `/model` ou Shift+Tab mata o processo atual e respawna com `--resume
+    <session_id>` — mesmo custo do modo per-turn ao trocar, nunca pior."""
+    proc_desc = (client.mode.value, getattr(client, "model", None))
+    if (persistent and client.proc is not None and client.proc.poll() is None
+            and getattr(client, "_proc_desc", None) == proc_desc):
+        return client.proc, True
+
+    if client.proc is not None and client.proc.poll() is None:
+        _terminate_proc(client.proc)
+
     cmd = [
         "claude", "--print",
         "--output-format", "stream-json",
@@ -79,18 +141,33 @@ def run_turn(client, message, images=None):
         else:
             cmd.append("--continue")
 
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        bufsize=1,
+        cwd=client.cwd,
+    )
+    client.proc = proc
+    client._proc_desc = proc_desc
+    return proc, False
+
+
+def run_turn(client, message, images=None):
+    """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
+    reset_col()
+    client._last_response_text = ""
+    has_images = bool(images)
+    clean_text = message.replace('[img]', '').strip() if has_images else message
+    cfg = config.load()
+    persistent = cfg.get("persistent", False)
+
     try:
-        client.proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stdin=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            bufsize=1,
-            cwd=client.cwd,
-        )
+        proc, _reused = _ensure_proc(client, persistent)
     except FileNotFoundError:
         sys.stdout.write(
             f"\n{YELLOW}claude CLI não encontrado.{RESET}"
@@ -98,7 +175,6 @@ def run_turn(client, message, images=None):
         )
         sys.stdout.flush()
         return False
-    proc = client.proc
 
     content = []
     if has_images:
@@ -110,7 +186,8 @@ def run_turn(client, message, images=None):
         content.append({'type': 'text', 'text': clean_text})
     proc.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}}) + '\n')
     proc.stdin.flush()
-    proc.stdin.close()
+    if not persistent:
+        proc.stdin.close()
 
     # Desabilita echo e modo canônico durante o turno — evita que teclas apareçam no
     # meio do typewriter e permite que qualquer tecla (não só Enter) acorde o select()
@@ -129,7 +206,6 @@ def run_turn(client, message, images=None):
     turn = None
     render = None
     try:
-        cfg = config.load()
         thinking_autoresize = cfg.get("thinking_autoresize", True)
 
         _rows            = _window_height(client.tmux_srv)
@@ -144,31 +220,15 @@ def run_turn(client, message, images=None):
             is_streaming_cb=lambda: client._streaming_text,
         )
 
-        _rl_lock = threading.Lock()
-
-        def _stderr_reader():
-            """Lê stderr (canal separado do stdout JSON) linha a linha, appenda em
-            stderr.log e faz o parsing textual de rate-limit ali — o stdout deixa
-            de precisar tratar linhas não-JSON como caminho esperado."""
-            stderr_log = RUNDIR / "stderr.log"
-            for raw in iter(proc.stderr.readline, ''):
-                with open(stderr_log, "a") as f:
-                    f.write(raw)
-                line = raw.strip()
-                if not line:
-                    continue
-                parsed = _parse_rate_limit_line(line)
-                with _rl_lock:
-                    if parsed:
-                        if not turn.rate_limited:
-                            turn.rate_limited = True
-                            turn.rate_limit_ts = time.time()
-                        if parsed["reset_str"] and not turn.rate_limit_reset_str:
-                            turn.rate_limit_reset_str = parsed["reset_str"]
-                    elif turn.rate_limited:
-                        turn.rate_limit_msg = line
-
-        threading.Thread(target=_stderr_reader, daemon=True).start()
+        # Roteia pro turn corrente por indireção (client._current_turn), não por
+        # closure direta sobre `turn` — em modo persistente o processo (e portanto
+        # sua thread de stderr) sobrevive a vários turnos, cada um com seu próprio
+        # objeto Turn; sem isso, rate-limit detectado no turno N+1 atualizaria o
+        # Turn descartado do turno N.
+        client._current_turn = turn
+        if not _reused:
+            client._rl_lock = threading.Lock()
+            threading.Thread(target=_stderr_reader, args=(proc, client, client._rl_lock), daemon=True).start()
 
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.15)
@@ -181,8 +241,13 @@ def run_turn(client, message, images=None):
                     _eof = True
                     break
                 turn.handle_line(raw)
+                if turn.turn_done:
+                    # 'result' delimita o turno no protocolo — em modo persistente
+                    # (Fase 4) o processo continua vivo e não fecha stdout sozinho,
+                    # então esperar EOF aqui travaria o turno pra sempre.
+                    break
                 ready, _, _ = select.select([proc.stdout], [], [], 0)
-            if _eof:
+            if _eof or turn.turn_done:
                 break
 
         # Deixa a animação pendente (ex.: cauda do último bloco de texto) terminar
@@ -291,7 +356,10 @@ def run_turn(client, message, images=None):
         if _stats_tty:
             threading.Thread(target=_bg_usage, args=(_my_usage_gen,), daemon=True).start()
 
-        proc.wait()
+        if not persistent:
+            proc.wait()
+        # persistente: o processo continua vivo pro próximo turno — não fecha
+        # stdin nem espera saída (achado do spike: não sairia sozinho mesmo assim).
     finally:
         # Rede de segurança para saída anormal (exceção, Ctrl+C): se `render.stop()`
         # já rodou no caminho normal acima, a thread já está morta e isto é um

@@ -202,46 +202,74 @@ permissão limpa, Ctrl+C sem lixo — ver checklist no fim desta seção).
 
 ### 4.1 Spike de protocolo (antes de codar)
 
-**Pesquisa de docs/issues concluída (jul/2026) — teste interativo do autor com o CLI real ainda
-pendente antes de codar o 4.2.**
+**✅ Concluído (jul/2026)** — pesquisa de docs/issues, depois confirmada com teste interativo ao vivo
+(script descartável `/tmp/spike_persistent.py`, rodado com autorização do autor contra o CLI real).
 
 1. **Múltiplas mensagens `user` sequenciais num processo vivo, um `result` por turno?** ✅
-   Confirmado por evidência de terceiros: [issue #25629](https://github.com/anthropics/claude-code/issues/25629)
-   documenta uma sessão real de **82 turnos** dentro de um único processo `stream-json`, sem fechar
-   stdin entre eles. [Issue #41665](https://github.com/anthropics/claude-code/issues/41665) confirma
-   que escrever no stdin **durante** um turno em andamento enfileira a mensagem (processada só
-   depois que o turno corrente termina) — reforça que múltiplos turnos sequenciais no mesmo processo
-   é o comportamento normal, não um caso extremo.
-2. **Existe controle de interrupt via stdin?** ❌ Não, hoje. [Issue #41665](https://github.com/anthropics/claude-code/issues/41665)
+   Confirmado por evidência de terceiros ([issue #25629](https://github.com/anthropics/claude-code/issues/25629),
+   sessão real de 82 turnos num único processo `stream-json`) **e ao vivo**: 2 mensagens (`"um"`,
+   `"dois"`) enviadas em sequência no mesmo `proc.stdin`, mesmo `session_id` do início ao fim, um
+   `result` por mensagem.
+2. **Mensagem escrita no stdin durante um turno em andamento?** Enfileira, não perde nem intercala.
+   [Issue #41665](https://github.com/anthropics/claude-code/issues/41665) documenta isso; **confirmado
+   ao vivo**: mandei `"tres"` (disparou tool call) e, sem esperar o `result`, `"quatro"` logo atrás —
+   saída foi um único `result` final com `"result":"tres\n\nquatro"` e `num_turns:2`, a 2ª mensagem
+   absorvida no turno corrente.
+3. **Existe controle de interrupt via stdin?** ❌ Não, hoje. [Issue #41665](https://github.com/anthropics/claude-code/issues/41665)
    é um feature request aberto pedindo exatamente isso (`{"type": "interrupt"}` — abortaria a tool
    corrente mantendo processo/sessão vivos, tipo ESC no modo interativo). Sem isso, as únicas opções
    documentadas são SIGINT (mata o processo inteiro) ou kill + respawn com `--resume` — **exatamente
    o fallback que o item 4.2 já previa**, então nenhuma mudança de plano aqui.
-3. **Modelo/permission-mode fixos por processo ou trocáveis via stdin?** Fixos, ao que tudo indica —
+4. **Modelo/permission-mode fixos por processo ou trocáveis via stdin?** Fixos, ao que tudo indica —
    nenhuma doc ou issue encontrada menciona um control message de stdin para trocar `--model`/
    `--permission-mode` em runtime; ambos são só flags de spawn. Confirma a suposição original:
    trocar = matar + respawnar com `--resume`.
-4. **Risco novo, não previsto originalmente:** [issue #25629](https://github.com/anthropics/claude-code/issues/25629)
-   documenta um bug conhecido (duplicata de #24478/#24481/#1920) onde o processo **não sai sozinho**
-   após o `result` final — stdout fica aberto, processo pendura até SIGINT/SIGKILL manual. Implica
-   que `ensure_proc()`/encerramento no 4.2 não pode confiar em `proc.wait()` puro após fechar stdin —
-   precisa de timeout com SIGKILL de reserva (o workaround documentado no issue).
+5. **Risco previsto e confirmado ao vivo: processo não sai sozinho após o `result` final.**
+   [Issue #25629](https://github.com/anthropics/claude-code/issues/25629) documenta o bug (duplicata
+   de #24478/#24481/#1920); **ao vivo**, `proc.poll()` continuou `None` (vivo) 20s depois do último
+   `result`, parado — precisei `proc.kill()`. Implica que `ensure_proc()`/encerramento no 4.2 não pode
+   confiar em `proc.wait()` puro após fechar stdin — precisa de timeout com SIGKILL de reserva.
+6. **Achado novo do teste ao vivo, não previsto originalmente:** cada mensagem de usuário gera seu
+   próprio evento `system/init` (não só um no spawn do processo) — mas sempre com o mesmo
+   `session_id`. O parser do 4.2 precisa tratar `system/init` como algo que pode reaparecer a cada
+   turno, não só ler um e ignorar os demais.
 
-Fontes: [Run Claude Code programmatically](https://code.claude.com/docs/en/headless) (docs oficiais —
-não cobre o protocolo bidirecional em detalhe, só confirma `--input-format`/`--output-format
-stream-json` e o evento `system/init`); as três issues do GitHub acima.
+Custo do teste ao vivo: ~$0.23 (3 turnos, Sonnet). Fontes: [Run Claude Code programmatically](https://code.claude.com/docs/en/headless)
+(docs oficiais — não cobre o protocolo bidirecional em detalhe, só confirma `--input-format`/
+`--output-format stream-json` e o evento `system/init`); as três issues do GitHub acima.
 
 ### 4.2 Implementação atrás de flag — `lib/runner/__init__.py`, `bin/chat.py`, `lib/config.py`
-- `persistent: true` na config (default `false` até estabilizar). Caminho per-turn atual permanece
-  como fallback — não é rewrite, é modo alternativo.
-- `ClaudeClient` ganha `ensure_proc()`: spawna uma vez com `--input-format stream-json`; cada envio
-  vira linha JSON no stdin (serialização já existe no caminho de imagem). Evento `result` delimita o turno.
-- `/model` e Shift+Tab (auto↔normal): se per-process, trocam matando + re-spawnando com
-  `--resume <session_id>` — custo igual ao modelo atual, nunca pior.
-- Ctrl+C: se houver interrupt via protocolo, usa; senão kill + respawn com `--resume` (comportamento atual).
-- `/refresh` e `/new` continuam `execvp` — não mudam.
-- Ganho: latência de início de turno constante em vez de crescer com a sessão; some o reload do transcript.
-- Verificação manual: sessão longa, turnos com tool calls, cancelamento, troca de modelo, resume após sair.
+**✅ Implementado** — 164 testes passando (156 anteriores + 8 novos). Verificação manual do autor
+ainda pendente (sessão longa, tool calls, cancelamento, troca de modelo, resume após sair).
+
+- `persistent: true` na config (`config.py` `DEFAULTS`, default `false` até estabilizar). Caminho
+  per-turn atual continua sendo o comportamento default — não é rewrite, é modo alternativo.
+- `_ensure_proc(client, persistent)` (novo, `runner/__init__.py`) substitui o spawn incondicional:
+  em modo persistente reaproveita `client.proc` enquanto ele seguir vivo (`poll() is None`) e tiver
+  sido spawnado com o mesmo `(mode, model)`; caso contrário mata o processo atual
+  (`_terminate_proc`) e respawna com `--resume <session_id>` — cobre `/model` e Shift+Tab sem
+  código extra em `chat.py`, exatamente como previsto no plano original.
+- `_terminate_proc(proc, timeout=3.0)` (novo): fecha stdin, `SIGTERM` + `wait(timeout)`, `SIGKILL`
+  de reserva se estourar o timeout — implementa a mitigação do achado do spike (4.1.5: processo não
+  sai sozinho).
+- `Turn.turn_done` (novo, setado em `_handle_result`): o loop de ingestão em `run_turn` agora quebra
+  ao ver o evento `result`, não só em EOF — necessário porque em modo persistente o processo nunca
+  fecha `stdout` sozinho entre turnos.
+- `_stderr_reader` virou função de módulo (não mais closure por turno) e lê `client._current_turn`
+  a cada linha em vez de fechar sobre um `Turn` fixo — em modo persistente a mesma thread de stderr
+  atende vários turnos, cada um com seu próprio objeto `Turn`; só é (re)spawnada quando o processo é
+  (re)spawnado, não a cada turno.
+- **Correção ao plano original:** `/refresh` e `/new` **não** ficaram inalterados — ambos usam
+  `execvp`, que substitui a imagem do processo sem rodar cleanup Python; em modo persistente
+  `self.proc` pode seguir vivo nesse momento (é o propósito da Fase 4), então os dois ganharam uma
+  chamada a `_terminate_proc(self.proc)` antes do `execvp` para não deixar o processo `claude` órfão.
+  Pelo mesmo motivo, a saída por `Ctrl+D` (`EOFError` em `chat.py`) também ganhou a chamada.
+- Ctrl+C continua matando o processo direto (`self.proc.kill()`, já existia) — não há interrupt via
+  protocolo (confirmado no 4.1); próximo turno respawna com `--resume`, mesmo custo do modo atual.
+- Ganho: latência de início de turno constante em vez de crescer com a sessão; some o reload do
+  transcript — só quando `persistent: true` estiver ligado.
+- Verificação manual (autor): sessão longa, turnos com tool calls, cancelamento, troca de modelo,
+  resume após sair.
 
 ### 4.3 Promover a default
 Depois de alguns dias com `persistent: true` sem sustos, virar default e documentar.
