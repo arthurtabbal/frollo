@@ -109,7 +109,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 
 | Feature | Arquivo-chave | Detalhe |
 |---|---|---|
-| **Cota de uso (Claude Max)** | `lib/usage.py`, `lib/runner/__init__.py:503` | Thread daemon roda `claude -p --no-session-persistence /usage` após cada turno; parseia `session_pct`/`week_pct`; pinta linha 4 do stats pane. `--no-session-persistence` evita criar sessão-zumbi |
+| **Cota de uso (Claude Max)** | `lib/usage.py`, `lib/runner/__init__.py:270` | Thread daemon faz `GET /api/oauth/usage` (o mesmo endpoint que a TUI do Claude Code consome) após cada turno; autentica com o `accessToken` de `~/.claude/.credentials.json`. Devolve `session_pct`/`week_pct`/resets **e** `limits[]` (sessão, semana e cotas por modelo `weekly_scoped`); pinta linha 4 do stats pane. Substituiu o scraping de `claude -p /usage`, que a partir de jul/2026 parou de imprimir as % de sessão/semana (movidas pro componente interativo) — ver seção "cota" do stats pane |
 | **Ctx bar no stats pane** | `lib/runner/stats.py:30`, `lib/runner/__init__.py:464` | Barra `█░` de 16 chars mostrando % da janela de contexto (input+cache). Cor: DIM→YELLOW→RED nos thresholds 70%/85% |
 | **Stats pane com 4 linhas** | `lib/runner/__init__.py:464` | Linha 1: turno; linha 2: sessão; linha 3: ctx bar; linha 4: cota (async). Posicionamento via `\033[H` / `\033[4;1H` no PTY. Render das 4 linhas centralizado em `lib/runner/stats.py` (`_render_turn_line`/`_render_total_line`/`_render_ctx_line`/`_render_quota_line`) — usado tanto pelo fim de turno quanto pelo `_startup_stats` de `chat.py` num resume |
 | **Custo/tokens do turno via evento `result`** | `lib/runner/__init__.py:394` | O evento `result` (fim do turno) carrega `total_cost_usd` e `usage` agregados de todos os requests à API feitos no turno — usado para custo e tokens exibidos em vez do último `message_start`, que subestimava turnos com tool calls (N tool calls = N+1 requests) |
@@ -129,7 +129,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `lib/runner/permissions.py` | ~145 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
 | `lib/runner/stats.py` | ~110 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
 | `lib/runner/text.py` | ~79 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla |
-| `lib/usage.py` | ~46 | `fetch_usage()`: roda `claude -p --no-session-persistence /usage` e parseia cota |
+| `lib/usage.py` | ~120 | `fetch_usage()`: `GET /api/oauth/usage` via `urllib` (stdlib), Bearer do accessToken OAuth; parseia `limits[]` + chaves legadas de cota |
 | `lib/tools/__init__.py` | ~97 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
 | `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |
 | `lib/tools/nvim.py` | ~41 | Jump pro editor nvim via tmux send-keys (Read/Edit/Write) |
@@ -188,7 +188,9 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 1. **turno** — timestamp, tokens in/out, tempo, custo do turno (+ cache se houver)
 2. **sessão** — total acumulado de tokens in/out, tempo e custo da sessão
 3. **ctx** — barra de progresso da janela de contexto (`░░░░░░░░░░░░░░░░`), porcentagem e tokens usados/máximo. Cor: cinza ≤70%, amarelo ≤85%, vermelho >85%
-4. **cota** — `session%` e `week%` da cota Claude Max, com data de reset. Preenchida **assincronamente** (thread daemon) via `lib/usage.py` → `claude -p --no-session-persistence /usage`. O `--no-session-persistence` é crítico: sem ele o `/usage` criaria uma entrada de sessão que apareceria no `--continue` do próximo turno.
+4. **cota** — cotas da assinatura Claude Max, com reset. Mostra `sessão` (janela de 5h), `semana` (7d, todos os modelos) e **cotas por modelo** (`weekly_scoped`, ex. `Fable 12%`), coloridas pela `severity` do servidor (ou thresholds de %). Preenchida **assincronamente** (thread daemon) via `lib/usage.py` → `GET /api/oauth/usage`.
+
+**Mudança do /usage (jul/2026):** o `claude -p /usage` deixou de imprimir as % de sessão/semana — elas passaram a renderizar só no componente Ink interativo; o print virou um resumo textual ("What's contributing to your limits usage?") sem os números. A fonte real é o endpoint `/api/oauth/usage` (`api.anthropic.com`), autenticado com o `accessToken` OAuth de `~/.claude/.credentials.json` + header `anthropic-beta: oauth-2025-04-20`. Retorna JSON com `five_hour`/`seven_day` (`utilization`, `resets_at`) e um `limits[]` já mastigado (`kind` = `session`/`weekly_all`/`weekly_scoped`, `percent`, `severity`, `resets_at`, `scope.model.display_name`). É o mesmo endpoint que a própria TUI consome (`fetchUtilization`). Endpoint interno não-documentado — pode mudar; em qualquer falha (401, rede) `fetch_usage()` retorna `None` e o pane mantém a última cota. Como não spawna mais um subprocesso `claude`, sumiu o `--no-session-persistence` (não há mais risco de sessão-zumbi) e o custo caiu de ~1 request de rate-limit + subprocess para um GET de ~200ms.
 
 Preços e tamanhos de janela de contexto por modelo em `runner/stats.py`.
 
