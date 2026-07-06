@@ -80,7 +80,7 @@ def _render_quota_line(usage):
         parts = []
         for lim in limits:
             col = _limit_color(lim.get('pct'), lim.get('severity'))
-            rst = f" {DIM}↺{lim['reset']}{RESET}" if lim.get('reset') else ""
+            rst = f" {DIM}↺ {lim['reset']}{RESET}" if lim.get('reset') else ""
             parts.append(f"{lim['label']} {col}{lim['pct']}%{RESET}{rst}")
         body = f"  {DIM}·{RESET}  ".join(parts)
         return f"\r\033[2K{DIM}{'cota':>8}{RESET}  ◎   {body}"
