@@ -279,6 +279,9 @@ Depois de alguns dias com `persistent: true` sem sustos, virar default e documen
 ## Fase 5 — Input (independente, pode intercalar)
 
 ### 5.1 Bracketed paste — `lib/input.py`
+**✅ Implementado** — 171 testes passando (164 anteriores + 7 novos em `TestParsePaste`).
+Verificação manual do autor ainda pendente (colar texto multilinha real via terminal).
+
 Colar texto multilinha envia na primeira quebra de linha (`input.py:216` trata `\n` como submit) — é
 a razão de existir o `/paste`. Além disso, cada keypress fora do fim da linha dispara `_redraw`
 completo com `_visual_pos` O(n) → paste/edição grande fica O(n²).

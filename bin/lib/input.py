@@ -13,6 +13,23 @@ from .theme import DIM, RESET, GREEN, WHITE, BG_USER, CLEAR
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]')
 
+_PASTE_START = b'[200~'
+_PASTE_END = b'\x1b[201~'
+
+
+def _parse_paste(read_more, prefix=b''):
+    """Acumula bytes (via read_more(), que retorna b'' no EOF) até achar o terminador
+    do bracketed paste. Extraído do I/O pra ser testável com bytes sintéticos."""
+    buf = prefix
+    while _PASTE_END not in buf:
+        chunk = read_more()
+        if not chunk:
+            break
+        buf += chunk
+    end = buf.find(_PASTE_END)
+    content = buf if end == -1 else buf[:end]
+    return content.decode('utf-8', errors='replace')
+
 HISTORY_PATH = Path(os.environ.get(
     "FROLLO_HISTORY",
     str(Path.home() / ".config" / "frollo" / "history.json"),
@@ -114,6 +131,7 @@ class InputReader:
         pre_clear_hook(text): chamado com o texto submetido, antes do _CLEAR.
         """
         sys.stdout.write(self._prompt())
+        sys.stdout.write('\033[?2004h')
         sys.stdout.flush()
 
         fd = sys.stdin.fileno()
@@ -270,7 +288,14 @@ class InputReader:
                 elif b == b'\x1b':  # sequências de escape
                     ready, _, _ = select.select([sys.stdin], [], [], 0.05)
                     if ready:
-                        _handle_escape(os.read(fd, 8))
+                        rest = os.read(fd, 8)
+                        if rest.startswith(_PASTE_START):  # bracketed paste
+                            pasted = _parse_paste(lambda: os.read(fd, 4096), rest[len(_PASTE_START):])
+                            line[cursor:cursor] = list(pasted)
+                            cursor += len(pasted)
+                            _redraw()
+                        else:
+                            _handle_escape(rest)
                     buf = b''
 
                 else:
@@ -285,6 +310,8 @@ class InputReader:
                     buf = b''
 
         finally:
+            sys.stdout.write('\033[?2004l')
+            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
         return ''.join(line)
