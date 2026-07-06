@@ -57,13 +57,10 @@ def run_turn(client, message, images=None):
     cmd = [
         "claude", "--print",
         "--output-format", "stream-json",
+        "--input-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
     ]
-    if has_images:
-        cmd += ["--input-format", "stream-json"]
-    else:
-        cmd += ["-p", message]
     if client.mode.value == "auto":
         cmd.append("--dangerously-skip-permissions")
     if getattr(client, "model", None):
@@ -103,16 +100,17 @@ def run_turn(client, message, images=None):
         return False
     proc = client.proc
 
+    content = []
     if has_images:
-        content = [
+        content += [
             {'type': 'image', 'source': {'type': 'base64', 'media_type': img['media_type'], 'data': img['data']}}
             for img in images
         ]
-        if clean_text:
-            content.append({'type': 'text', 'text': clean_text})
-        proc.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}}) + '\n')
-        proc.stdin.flush()
-        proc.stdin.close()
+    if clean_text:
+        content.append({'type': 'text', 'text': clean_text})
+    proc.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}}) + '\n')
+    proc.stdin.flush()
+    proc.stdin.close()
 
     try:
         SKIP_FLAG.unlink()
