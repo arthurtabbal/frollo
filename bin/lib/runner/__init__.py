@@ -10,11 +10,11 @@ import time
 from datetime import datetime, timedelta
 
 from ..theme import DIM, RESET, YELLOW
-from ..typewriter import SKIP_FLAG
 from ..gargulas import _gargula_comment
 
 from .text import _typewrite, reset_col
 from .panes import _window_height, _resize_thinking
+from .render import RenderQueue
 from .stats import (
     _model_price, _model_ctx_window,
     _render_quota_line, _render_ctx_line, _render_turn_line, _render_total_line,
@@ -112,11 +112,6 @@ def run_turn(client, message, images=None):
     proc.stdin.flush()
     proc.stdin.close()
 
-    try:
-        SKIP_FLAG.unlink()
-    except FileNotFoundError:
-        pass
-
     # Desabilita echo e modo canônico durante o turno — evita que teclas apareçam no
     # meio do typewriter e permite que qualquer tecla (não só Enter) acorde o select()
     # em _typewrite (ICANON ligado só libera leitura em linhas completas). ISIG fica
@@ -132,6 +127,7 @@ def run_turn(client, message, images=None):
 
     thinking_autoresize = True
     turn = None
+    render = None
     try:
         cfg = config.load()
         thinking_autoresize = cfg.get("thinking_autoresize", True)
@@ -140,7 +136,13 @@ def run_turn(client, message, images=None):
         _idle_lines      = max(8,  int(_rows * 0.16))
         _max_think_lines = max(12, _rows - int(_rows * 0.26) - max(2, int(_rows * 0.08)) - 6)
 
-        turn = Turn(client, proc, cfg, thinking_autoresize, _max_think_lines, _idle_lines)
+        render = RenderQueue()
+        turn = Turn(client, proc, cfg, thinking_autoresize, _max_think_lines, _idle_lines, render)
+        render.start(
+            status_cb=turn._show_status,
+            clear_status_cb=turn._clear_status,
+            is_streaming_cb=lambda: client._streaming_text,
+        )
 
         _rl_lock = threading.Lock()
 
@@ -171,7 +173,6 @@ def run_turn(client, message, images=None):
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.15)
             if not ready:
-                turn._show_status()
                 continue
             _eof = False
             while ready:
@@ -183,6 +184,11 @@ def run_turn(client, message, images=None):
                 ready, _, _ = select.select([proc.stdout], [], [], 0)
             if _eof:
                 break
+
+        # Deixa a animação pendente (ex.: cauda do último bloco de texto) terminar
+        # em ritmo normal e para a thread — só depois disso é seguro o main thread
+        # voltar a escrever no stdout sozinho (checks abaixo).
+        render.stop()
 
         if turn.text_started and turn.spinner_shown:
             sys.stdout.write("\n")
@@ -287,6 +293,13 @@ def run_turn(client, message, images=None):
 
         proc.wait()
     finally:
+        # Rede de segurança para saída anormal (exceção, Ctrl+C): se `render.stop()`
+        # já rodou no caminho normal acima, a thread já está morta e isto é um
+        # no-op seguro (join em thread já terminada retorna na hora). Se a
+        # exceção interrompeu o turno antes disso, força o esvaziamento imediato
+        # da fila em vez de esperar a animação terminar em ritmo normal.
+        if render is not None:
+            render.cancel()
         if thinking_autoresize and turn is not None and turn.thinking_lines > turn._idle_lines:
             _resize_thinking(client.tmux_srv, "idle")
         termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)

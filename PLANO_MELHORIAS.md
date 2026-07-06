@@ -151,21 +151,50 @@ rate-limit não tinham cobertura direta).
 
 ## Fase 3 — Render desacoplado do loop de eventos
 
+**✅ Concluída** — 145 testes passando (131 anteriores + 14 novos em `test_render.py`).
+Verificação manual do autor ainda pendente (thinking longo sem congelar o spinner, skip,
+permissão limpa, Ctrl+C sem lixo — ver checklist no fim desta seção).
+
 ### 3.1 Fila + thread de render — novo `lib/runner/render.py`
-- `RenderQueue`: `queue.Queue` de itens `(destino, texto, delay)`, destino ∈ {stdout-chat,
-  thinking-log, tools-log}; thread consumidor aplica o typewriter. **Fila única** preserva a ordem
-  relativa entre chat/thinking/gárgulas (duas filas dessincronizariam a narrativa).
-- Skip = flag que faz o consumidor despejar a fila sem delay (substitui `SKIP_FLAG` em arquivo).
-- Loop de eventos nunca mais dorme por animação: ingestão na velocidade do pipe, fim do backpressure.
-- Pontos de sincronização: antes de banner de permissão e antes do prompt de fim de turno,
-  `queue.join()` (flush) — permissão nunca aparece no meio de uma frase.
-- Spinner: responsabilidade do render thread quando a fila está vazia e o turno vivo — some a lógica
-  de `_show_status` espalhada.
-- `elapsed`/stats medidos no evento `result` (tempo real), não no fim da animação.
-- Riscos a vigiar: termios (render thread escreve, main mexe em termios — ok porque trocas de modo
-  acontecem só nos pontos de flush) e Ctrl+C (matar proc + drenar fila + parar thread, nessa ordem).
-- Verificação manual: thinking longo não congela o spinner, skip funciona, permissão aparece limpa,
-  Ctrl+C não deixa lixo.
+**✅**
+- `RenderQueue`: fila única (`queue.Queue`) de itens `("stdout", texto, delay)` ou
+  `("file", path, texto, delay, on_newline, hesitate)`; uma thread consumidora aplica o
+  typewriter. Fila única preserva a ordem relativa entre chat/thinking/gárgulas — `turn.py`
+  não chama mais `_typewrite`/`log_animated` diretamente, só `render.push_stdout`/`push_file`.
+  `log_animated`/`SKIP_FLAG` (mortos após a migração — `SKIP_FLAG` nunca era aceso por ninguém)
+  foram removidos de `typewriter.py`.
+- Skip: um `threading.Event` compartilhado — uma tecla detectada durante a animação liga o
+  flag, que faz o item atual **e o que já estiver enfileirado** despejarem sem delay, até a
+  fila esvaziar (aí o flag reseta sozinho).
+- Loop de eventos (`run_turn`) não chama mais `_show_status()` nem dorme por animação —
+  ingestão só lê `proc.stdout` e despacha pro `Turn`, na velocidade do pipe.
+- Pontos de sincronização: `render.join()` antes de ler estado pós-escrita (`col_is_mid_line()`
+  em `_handle_content_block_stop`, fechamento do bloco de thinking) e `render.suspend()`/`resume()`
+  ao redor de `control_request`/`permission_request`/`_handle_permission_ask` — `suspend()` espera
+  a fila esvaziar, apaga o spinner e segura o lock até `resume()`, então o banner de permissão
+  nunca sai intercalado com um frame do spinner.
+- Spinner: `RenderQueue` chama `status_cb`/`clear_status_cb` (implementados por
+  `Turn._show_status`/`_clear_status`, inalterados) via tick periódico (a cada ~150ms) quando a
+  fila está ociosa, **e também no meio de uma animação longa** (`_maybe_tick`, chamado a cada char
+  de `_write_stdout`/`_write_file`) — pra thinking longo não congelar o spinner. As chamadas
+  espalhadas de `_show_status()` em `message_start`/`tool_use`/`thinking_delta`/`rate_limit_event`
+  foram removidas — o tick cobre isso sozinho.
+- `stdout_lock` é **`RLock`, não `Lock`**: `_write_stdout` roda com o lock preso (via `_dispatch`)
+  e chama `_maybe_tick` a cada char — se um tick disparar nesse meio-tempo, `_tick` precisa
+  readquirir o mesmo lock, na mesma thread. Com `Lock` comum isso é autodeadlock (achado e coberto
+  por teste de regressão em `test_render.py`, usando a ponta de leitura de um pipe real como stdin
+  pra garantir tempo real decorrido durante a escrita).
+- Erros de escrita (ex.: disco cheio) num item da fila não travam `join()`/`stop()` pra sempre —
+  `_run` chama `task_done()` num `finally`, mesmo se `_dispatch` levantar.
+- `run_turn`: `render.stop()` (drena em ritmo normal, para a thread) roda logo após o `while True`
+  de ingestão terminar (EOF), antes de qualquer checagem final de `turn.spinner_shown`/`text_started`
+  — garante que só o main thread mexe em stdout dali em diante. `render.cancel()` (força
+  esvaziamento via skip, não espera a animação) roda incondicionalmente no `finally` como rede de
+  segurança — é no-op seguro se `stop()` já rodou (thread morta, `join()` retorna na hora), e é o
+  caminho real de limpeza se uma exceção/Ctrl+C interrompeu o turno antes do `stop()` normal.
+- `elapsed`/stats continuam medidos no evento `result` (já era assim desde antes da Fase 3).
+- Verificação manual (autor): thinking longo não congela o spinner, skip funciona, permissão
+  aparece limpa, Ctrl+C não deixa lixo.
 
 ---
 

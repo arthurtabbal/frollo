@@ -56,10 +56,45 @@ def _se(event):
     return json.dumps({"type": "stream_event", "event": event})
 
 
+class _FakeRenderQueue:
+    """Substitui RenderQueue nesses testes: aplica os pushes na hora, sem thread
+    nem sleep — o que essas asserções verificam é o dispatch feito por Turn
+    (o que é enfileirado e quando), não a mecânica interna da fila (que tem
+    testes próprios em test_render.py)."""
+
+    def __init__(self, anim_calls):
+        self._anim_calls = anim_calls
+
+    def start(self, **kw):
+        pass
+
+    def stop(self):
+        pass
+
+    def cancel(self):
+        pass
+
+    def join(self):
+        pass
+
+    def suspend(self):
+        pass
+
+    def resume(self):
+        pass
+
+    def push_stdout(self, text, delay=0.015):
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def push_file(self, path, text, delay=0.030, on_newline=None, hesitate=True):
+        self._anim_calls.append(text)
+
+
 def _run_stream(fake_client, lines, config_override=None):
     """Roda run_turn com um stream fixo, capturando o que iria pro pane de thinking.
 
-    Retorna (chamadas_de__log, chamadas_de_log_animated, chamadas_de_resize).
+    Retorna (chamadas_de__log, chamadas_de_push_file, chamadas_de_resize).
     """
     proc = MagicMock()
     proc.stdout = _FakeStdout([l + "\n" for l in lines])
@@ -71,6 +106,7 @@ def _run_stream(fake_client, lines, config_override=None):
     fake_client._total_output_tokens = 0
     fake_client._total_elapsed = 0.0
     fake_client._total_cost = 0.0
+    fake_client._streaming_text = False
 
     cfg = {"typewriter": False, "gargoyles": False}
     cfg.update(config_override or {})
@@ -90,7 +126,7 @@ def _run_stream(fake_client, lines, config_override=None):
              patch("lib.runner._resize_thinking", side_effect=lambda srv, size: resize_calls.append(size)), \
              patch("lib.runner.turn._resize_thinking", side_effect=lambda srv, size: resize_calls.append(size)), \
              patch("lib.runner.turn._log", side_effect=lambda path, text: log_calls.append(text)), \
-             patch("lib.runner.turn.log_animated", side_effect=lambda path, text, **kw: anim_calls.append(text)), \
+             patch("lib.runner.RenderQueue", side_effect=lambda: _FakeRenderQueue(anim_calls)), \
              patch.object(sys, "stdin", devnull):
             run_turn(fake_client, "oi")
     finally:

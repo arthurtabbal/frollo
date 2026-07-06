@@ -30,10 +30,11 @@ def fake_client():
     return client
 
 
-def _turn(fake_client, cfg=None, thinking_autoresize=True):
+def _turn(fake_client, cfg=None, thinking_autoresize=True, render=None):
     proc = MagicMock()
     cfg = cfg if cfg is not None else {"typewriter": False, "gargoyles": False}
-    return Turn(fake_client, proc, cfg, thinking_autoresize, max_think_lines=20, idle_lines=8)
+    render = render if render is not None else MagicMock()
+    return Turn(fake_client, proc, cfg, thinking_autoresize, max_think_lines=20, idle_lines=8, render=render)
 
 
 def _se(event):
@@ -65,15 +66,14 @@ class TestThinkingDelta:
         turn = _turn(fake_client, thinking_autoresize=True)
         turn.handle_event(_se({"type": "content_block_start", "content_block": {"type": "thinking"}}))
         with patch("lib.runner.turn._log") as mock_log, \
-             patch("lib.runner.turn.log_animated") as mock_anim, \
              patch("lib.runner.turn._resize_thinking") as mock_resize:
             turn.handle_event(_se({
                 "type": "content_block_delta",
                 "delta": {"type": "thinking_delta", "thinking": "9 sheep survive."},
             }))
         assert turn.thinking_header_written is True
-        mock_anim.assert_called_once()
-        assert mock_anim.call_args.args[1] == "9 sheep survive."
+        turn.render.push_file.assert_called_once()
+        assert turn.render.push_file.call_args.args[1] == "9 sheep survive."
         mock_resize.assert_called_once_with("srv", 20)
         assert turn.thinking_lines == 20
 
@@ -96,18 +96,16 @@ class TestTextDelta:
     def test_acumula_last_response_text(self, fake_client):
         turn = _turn(fake_client)
         turn.current_block = "text"
-        with patch("lib.runner.turn._typewrite"):
-            turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "olá "}}))
-            turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "mundo"}}))
+        turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "olá "}}))
+        turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "mundo"}}))
         assert fake_client._last_response_text == "olá mundo"
 
     def test_suprimido_apos_pedido_de_permissao(self, fake_client):
         turn = _turn(fake_client)
         turn.current_block = "text"
         turn._suppress_perm_text = True
-        with patch("lib.runner.turn._typewrite") as mock_tw:
-            turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ignorado"}}))
-        mock_tw.assert_not_called()
+        turn.handle_event(_se({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ignorado"}}))
+        turn.render.push_stdout.assert_not_called()
         # ainda assim acumula o texto bruto do turno
         assert fake_client._last_response_text == "ignorado"
 

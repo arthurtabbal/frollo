@@ -18,10 +18,9 @@ from ..theme import (
     CLEAR,
 )
 from ..tools import log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
-from ..typewriter import log_animated
 from ..gargulas import _gargula_comment
 
-from .text import _typewrite, reset_col, col_is_mid_line
+from .text import col_is_mid_line
 from .panes import THINKING_LOG, _resize_thinking
 from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request, _write_stdin
 from .stats import _fmt_tok
@@ -30,13 +29,14 @@ from .stats import _fmt_tok
 class Turn:
     """Estado de um turno em andamento + dispatch de eventos do stream-json."""
 
-    def __init__(self, client, proc, cfg, thinking_autoresize, max_think_lines, idle_lines):
+    def __init__(self, client, proc, cfg, thinking_autoresize, max_think_lines, idle_lines, render):
         self.client = client
         self.proc = proc
         self.cfg = cfg
         self.thinking_autoresize = thinking_autoresize
         self._max_think_lines = max_think_lines
         self._idle_lines = idle_lines
+        self.render = render
 
         self._tool_names = {}
         self.start_time = time.time()
@@ -133,13 +133,19 @@ class Turn:
         elif etype == "user":
             self._handle_user(event)
         elif etype == "control_request":
-            self._clear_status()
-            _handle_control_request(event, self.proc, self.client.cwd)
+            self.render.suspend()
+            try:
+                _handle_control_request(event, self.proc, self.client.cwd)
+            finally:
+                self.render.resume()
         elif etype == "permission_request":
-            self._clear_status()
-            approved = _handle_permission(event, self.proc)
-            if not approved:
-                _write_stdin(self.proc, "n\n")
+            self.render.suspend()
+            try:
+                approved = _handle_permission(event, self.proc)
+                if not approved:
+                    _write_stdin(self.proc, "n\n")
+            finally:
+                self.render.resume()
         elif etype == "result":
             self._handle_result(event)
         elif etype == "rate_limit_event":
@@ -163,7 +169,6 @@ class Turn:
             self.model_name = msg.get("model", self.model_name)
             if self.model_name:
                 self.client.observed_model = self.model_name
-            self._show_status()
 
         elif et == "message_delta":
             self.output_tokens = e.get("usage", {}).get("output_tokens", 0)
@@ -178,17 +183,16 @@ class Turn:
                 # não cresce nem polui com timestamp à toa.
                 self.thinking_header_written = False
             elif self.current_block == "text":
-                self._clear_status()
                 if self.thinking_header_written and self.thinking_autoresize:
                     _resize_thinking(self.client.tmux_srv, "summary")
-                if self.text_block_count > 0:
-                    sys.stdout.write("\n")
-                sys.stdout.flush()
-                self.text_block_count += 1
-                self.text_started = True
+                # Seta o flag antes de enfileirar — o render thread só desenha o
+                # spinner quando isso é False, então essa ordem evita que ele
+                # tente desenhar bem no instante em que o texto começa a sair.
                 self.client._streaming_text = True
-                sys.stdout.write(CHAT_FG)
-                sys.stdout.flush()
+                self.text_started = True
+                prefix = ("\n" if self.text_block_count > 0 else "") + CHAT_FG
+                self.text_block_count += 1
+                self.render.push_stdout(prefix, delay=0)
 
         elif et == "content_block_delta":
             self._handle_content_block_delta(e.get("delta", {}))
@@ -225,8 +229,7 @@ class Turn:
                         if self.thinking_col % 80 == 0:
                             _on_newline()
 
-                log_animated(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
-                self._show_status()
+                self.render.push_file(THINKING_LOG, chunk_t, delay=0.001, on_newline=_on_newline, hesitate=False)
 
         elif dtype == "text_delta":
             chunk = delta.get("text", "")
@@ -236,14 +239,14 @@ class Turn:
             else:
                 rendered = self.md_buf.feed(chunk)
                 if rendered:
-                    if self.cfg.get("typewriter", True):
-                        _typewrite(CHAT_FG + rendered + RESET)
-                    else:
-                        sys.stdout.write(CHAT_FG + rendered + RESET)
-                        sys.stdout.flush()
+                    delay = 0.015 if self.cfg.get("typewriter", True) else 0
+                    self.render.push_stdout(CHAT_FG + rendered + RESET, delay=delay)
 
     def _handle_content_block_stop(self):
         if self.current_block == "thinking":
+            # Flush: sem isso, o fechamento (RESET/nota) escreveria no arquivo
+            # antes do render thread terminar de animar o último chunk enfileirado.
+            self.render.join()
             if self.thinking_header_written:
                 _log(THINKING_LOG, f"{RESET}\n")
             else:
@@ -251,19 +254,17 @@ class Turn:
                 # só signature, texto vazio). Mostra uma nota em vez de pane mudo.
                 _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}  {DIM}— o modelo omitiu o thinking (display:omitted){RESET}\n")
         elif self.current_block == "text":
-            self.client._streaming_text = False
             remainder = self.md_buf.flush()
-            if remainder:
-                if self.cfg.get("typewriter", True):
-                    _typewrite(CHAT_FG + remainder + RESET)
-                else:
-                    sys.stdout.write(CHAT_FG + remainder + RESET)
-                    sys.stdout.flush()
-            sys.stdout.write(RESET)
+            text = CHAT_FG + remainder + RESET if remainder else RESET
+            delay = 0.015 if (remainder and self.cfg.get("typewriter", True)) else 0
+            self.render.push_stdout(text, delay=delay)
+            # Flush antes de ler col_is_mid_line() — senão a coluna refletiria
+            # o estado de antes desse texto ainda ser escrito de fato.
+            self.render.join()
+            self.client._streaming_text = False
             if col_is_mid_line():
-                sys.stdout.write("\n")
-                reset_col()
-            sys.stdout.flush()
+                self.render.push_stdout("\n", delay=0)
+                self.render.join()
         self.current_block = None
 
     # -- assistant / user -------------------------------------------------
@@ -271,8 +272,7 @@ class Turn:
     def _handle_assistant(self, event):
         for block in event.get("message", {}).get("content", []):
             if block.get("type") == "tool_use":
-                self._show_status()
-                log_tool_call(block, self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin)
+                log_tool_call(block, self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, render=self.render)
                 self._tool_names[block.get("id", "")] = block.get("name", "?")
 
     def _handle_user(self, event):
@@ -287,10 +287,13 @@ class Turn:
                     if ("requested permissions" in err_text or "haven't granted" in err_text
                             or "requires approval" in err_text):
                         tool_name = self._tool_names.get(block.get("tool_use_id", ""), "?")
-                        self._clear_status()
-                        if _handle_permission_ask(tool_name, self.client.cwd):
-                            self.perm_approved = True
-                            self.client._retry_context = f"({tool_name} aprovado — prossiga)"
+                        self.render.suspend()
+                        try:
+                            if _handle_permission_ask(tool_name, self.client.cwd):
+                                self.perm_approved = True
+                                self.client._retry_context = f"({tool_name} aprovado — prossiga)"
+                        finally:
+                            self.render.resume()
                         self._suppress_perm_text = True
                 log_tool_result(block)
                 _blk_tool = self._tool_names.get(block.get("tool_use_id", ""), "")
@@ -306,7 +309,8 @@ class Turn:
                             if _g_prefix:
                                 _log(TOOLS_LOG, '\n')
                                 _log(TOOLS_LOG, _g_prefix)
-                                log_animated(TOOLS_LOG, _g_fala)
+                                self.render.push_file(TOOLS_LOG, _g_fala)
+                                self.render.join()
                                 _log(TOOLS_LOG, '\n')
 
     # -- result / rate limit -------------------------------------------------
@@ -332,4 +336,3 @@ class Turn:
             reset_dt = datetime.fromtimestamp(self.rate_limit_ts + self.rate_limit_retry)
             today    = datetime.now().date()
             self.rate_limit_reset_str = reset_dt.strftime("%H:%M:%S" if reset_dt.date() == today else "%d/%m %H:%M:%S")
-        self._show_status()
