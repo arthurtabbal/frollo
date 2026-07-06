@@ -201,13 +201,35 @@ permissão limpa, Ctrl+C sem lixo — ver checklist no fim desta seção).
 ## Fase 4 — Processo `claude` persistente (a maior mudança)
 
 ### 4.1 Spike de protocolo (antes de codar)
-Investigar, com o CLI real, três perguntas:
-1. Com `--input-format stream-json` e processo vivo, o CLI aceita múltiplas mensagens `user`
-   sequenciais, emitindo um `result` por turno?
-2. Existe controle de interrupt via stdin (cancelar turno sem matar o processo)?
-3. Modelo e permission-mode são fixos por processo (provável) ou trocáveis?
 
-Docs + teste rápido em terminal (parte de docs/protocolo pelo agente; teste interativo do autor).
+**Pesquisa de docs/issues concluída (jul/2026) — teste interativo do autor com o CLI real ainda
+pendente antes de codar o 4.2.**
+
+1. **Múltiplas mensagens `user` sequenciais num processo vivo, um `result` por turno?** ✅
+   Confirmado por evidência de terceiros: [issue #25629](https://github.com/anthropics/claude-code/issues/25629)
+   documenta uma sessão real de **82 turnos** dentro de um único processo `stream-json`, sem fechar
+   stdin entre eles. [Issue #41665](https://github.com/anthropics/claude-code/issues/41665) confirma
+   que escrever no stdin **durante** um turno em andamento enfileira a mensagem (processada só
+   depois que o turno corrente termina) — reforça que múltiplos turnos sequenciais no mesmo processo
+   é o comportamento normal, não um caso extremo.
+2. **Existe controle de interrupt via stdin?** ❌ Não, hoje. [Issue #41665](https://github.com/anthropics/claude-code/issues/41665)
+   é um feature request aberto pedindo exatamente isso (`{"type": "interrupt"}` — abortaria a tool
+   corrente mantendo processo/sessão vivos, tipo ESC no modo interativo). Sem isso, as únicas opções
+   documentadas são SIGINT (mata o processo inteiro) ou kill + respawn com `--resume` — **exatamente
+   o fallback que o item 4.2 já previa**, então nenhuma mudança de plano aqui.
+3. **Modelo/permission-mode fixos por processo ou trocáveis via stdin?** Fixos, ao que tudo indica —
+   nenhuma doc ou issue encontrada menciona um control message de stdin para trocar `--model`/
+   `--permission-mode` em runtime; ambos são só flags de spawn. Confirma a suposição original:
+   trocar = matar + respawnar com `--resume`.
+4. **Risco novo, não previsto originalmente:** [issue #25629](https://github.com/anthropics/claude-code/issues/25629)
+   documenta um bug conhecido (duplicata de #24478/#24481/#1920) onde o processo **não sai sozinho**
+   após o `result` final — stdout fica aberto, processo pendura até SIGINT/SIGKILL manual. Implica
+   que `ensure_proc()`/encerramento no 4.2 não pode confiar em `proc.wait()` puro após fechar stdin —
+   precisa de timeout com SIGKILL de reserva (o workaround documentado no issue).
+
+Fontes: [Run Claude Code programmatically](https://code.claude.com/docs/en/headless) (docs oficiais —
+não cobre o protocolo bidirecional em detalhe, só confirma `--input-format`/`--output-format
+stream-json` e o evento `system/init`); as três issues do GitHub acima.
 
 ### 4.2 Implementação atrás de flag — `lib/runner/__init__.py`, `bin/chat.py`, `lib/config.py`
 - `persistent: true` na config (default `false` até estabilizar). Caminho per-turn atual permanece
