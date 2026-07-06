@@ -100,12 +100,14 @@ class Turn:
         sys.stdout.flush()
 
     def _clear_status(self):
+        # Só apaga se o spinner está de fato visível. `_clear_status` é chamado
+        # antes de CADA chunk de stdout (render._dispatch); com spinner já
+        # apagado, um `\r\033[2K` aqui limparia a linha de resposta já digitada
+        # pelo chunk anterior — daí texto "some" enquanto o typewriter avança.
         if self.spinner_shown:
             sys.stdout.write("\r\033[2K\033[1A\r\033[2K")
-        else:
-            sys.stdout.write("\r\033[2K")
-        self.spinner_shown = False
-        sys.stdout.flush()
+            self.spinner_shown = False
+            sys.stdout.flush()
 
     # -- dispatch -----------------------------------------------------------
 

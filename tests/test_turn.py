@@ -186,3 +186,23 @@ class TestRateLimitEvent:
         assert turn.rate_limit_reset_str  # calculado a partir do retryAfter
         logged = json.loads((tmp_path / "rate-limit.log").read_text().strip())
         assert logged["retryAfter"] == 30
+
+
+class TestClearStatus:
+    """_clear_status é chamado antes de cada chunk de stdout (render._dispatch).
+    Sem spinner visível ele deve ser no-op — senão apagaria a linha de resposta
+    já digitada pelo chunk anterior (regressão: 'texto some enquanto digita')."""
+
+    def test_noop_sem_spinner(self, fake_client, capsys):
+        turn = _turn(fake_client)
+        turn.spinner_shown = False
+        turn._clear_status()
+        assert capsys.readouterr().out == ""  # nada escrito, nada apagado
+
+    def test_apaga_spinner_visivel(self, fake_client, capsys):
+        turn = _turn(fake_client)
+        turn.spinner_shown = True
+        turn._clear_status()
+        out = capsys.readouterr().out
+        assert "\033[2K" in out and "\033[1A" in out
+        assert turn.spinner_shown is False
