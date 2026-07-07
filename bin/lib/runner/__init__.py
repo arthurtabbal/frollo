@@ -122,6 +122,7 @@ def _ensure_proc(client, persistent):
         "--input-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
+        "--thinking-display", "summarized",
     ]
     if client.mode.value == "auto":
         cmd.append("--dangerously-skip-permissions")
