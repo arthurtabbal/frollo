@@ -97,7 +97,7 @@ Stop:        hook_event_name, last_assistant_message, cwd
 ## Testes
 
 ```bash
-python3 -m pytest tests/          # testes unitários Python (84 testes)
+python3 -m pytest tests/          # testes unitários Python (174 testes)
 bash tests/test_install_sh.sh     # testes unitários do install.sh (parsers de versão)
 ```
 
@@ -116,6 +116,8 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | **Markdown rendering no chat** | `lib/theme.py:97` (`MdBuffer`), `lib/theme.py:139` (`_render_code_block`) | `MdBuffer` acumula chunks até spans balanceados (fenced blocks, bold, italic, code). Rendering: blocos ```` ``` ```` com linguagem em DIM+CYAN, 2-space indent, inline `code` em amarelo |
 | **Soft-wrap (sem word-wrap manual)** | `lib/runner/text.py:10` | `_typewrite` não insere `\n` — deixa o terminal fazer soft-wrap. Refluí corretamente ao redimensionar |
 | **Modelo padrão: Sonnet** | `bin/chat.py` (DEFAULT_MODEL) | Mudou de Haiku → Sonnet em d0521ec; documentado na seção de modelos |
+| **Render desacoplado do loop de eventos** | `lib/runner/turn.py`, `lib/runner/render.py` | Fase 3 do plano: `run_turn` foi partido em `Turn` (máquina de estados do turno, `handle_line` por tipo de evento) + `RenderQueue` (fila única que roda o typewriter numa thread própria). O loop de ingestão em `run_turn` só lê `proc.stdout` e despacha pro `Turn`, nunca mais dorme por animação — resolve o backpressure que travava o CLI quando o modelo produzia mais rápido que o typewriter consumia |
+| **Processo `claude` persistente** | `lib/runner/__init__.py` (`_ensure_proc`/`_terminate_proc`), `lib/config.py` (`persistent`) | Atrás da flag `persistent: true` (default `false`): reaproveita o mesmo processo `claude --input-format stream-json` entre turnos em vez de respawnar com `--resume` a cada um — elimina o cold-start + reload do transcript, que crescia com o tamanho da sessão. Troca de `/model`/modo mata e respawna (`_terminate_proc`, com `SIGKILL` de reserva — o processo não sai sozinho ao fechar stdin, achado do spike de protocolo). `/refresh`, `/new` e Ctrl+D também chamam `_terminate_proc` antes do `execvp`/saída, pra não deixar processo órfão |
 
 ## Módulos (bin/)
 
@@ -123,28 +125,30 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 
 | Arquivo | Linhas | Responsabilidade |
 |---|---|---|
-| `chat.py` | ~420 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
-| `lib/runner/__init__.py` | ~535 | Executa turno: subprocess claude, loop de eventos, spinner, streaming, rate-limit — tudo em `try/finally` (garante restore do termios e do pane de thinking mesmo em erro/Ctrl+C) |
-| `lib/runner/panes.py` | ~60 | Redimensionamento dinâmico dos panes tmux (idle/summary/full) |
-| `lib/runner/permissions.py` | ~145 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
-| `lib/runner/stats.py` | ~110 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
-| `lib/runner/text.py` | ~79 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla |
+| `chat.py` | ~430 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
+| `lib/runner/__init__.py` | ~375 | `_ensure_proc`/`_terminate_proc` (spawn per-turn ou reaproveite em modo persistente), loop `select` que alimenta `Turn.handle_line`, finalize (stats/cota/restore) — tudo em `try/finally` (garante restore do termios e do pane de thinking mesmo em erro/Ctrl+C) |
+| `lib/runner/turn.py` | ~345 | Classe `Turn` — máquina de estados do turno (Fase 2): consome linhas do stream-json e despacha por tipo de evento (`_handle_stream_event`, `_handle_content_block_delta`, `_handle_result` etc.) |
+| `lib/runner/render.py` | ~225 | `RenderQueue` (Fase 3) — fila única que roda o typewriter (chat/thinking/gárgulas) numa thread própria; skip via `threading.Event` compartilhado; spinner via tick periódico mesmo em animação longa |
+| `lib/runner/panes.py` | ~65 | Redimensionamento dinâmico dos panes tmux (idle/summary/full) |
+| `lib/runner/permissions.py` | ~155 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
+| `lib/runner/stats.py` | ~140 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
+| `lib/runner/text.py` | ~60 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla; `col_is_mid_line`/`_advance_col` (posição pra `RenderQueue`) |
 | `lib/usage.py` | ~120 | `fetch_usage()`: `GET /api/oauth/usage` via `urllib` (stdlib), Bearer do accessToken OAuth; parseia `limits[]` + chaves legadas de cota |
-| `lib/tools/__init__.py` | ~97 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
+| `lib/tools/__init__.py` | ~100 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
 | `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |
 | `lib/tools/nvim.py` | ~41 | Jump pro editor nvim via tmux send-keys (Read/Edit/Write) |
-| `lib/input.py` | ~280 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, histórico persistente em disco, paste de imagem |
+| `lib/input.py` | ~320 | Input raw: cursor, Alt+Enter multilinha, Shift+Tab, histórico persistente em disco, paste de imagem, bracketed paste (`_parse_paste`) |
 | `lib/gargulas.py` | ~91 | Loader das gárgulas a partir de `characters/*.json` (valida schema e cor) |
-| `lib/typewriter.py` | ~39 | `log_animated` (typewriter em arquivos) + `_char_delay` |
+| `lib/typewriter.py` | ~16 | Só `_char_delay` — `log_animated`/`SKIP_FLAG` foram removidos na Fase 3 (mortos após a migração pra `RenderQueue`) |
 | `lib/theme.py` | ~170 | Cores ANSI, `_F` (chamas), `_GLOW` (gradiente), citações, `MdBuffer` (com cap de tamanho contra spans nunca-balanceados), `_md()` |
-| `lib/session.py` | ~103 | Picker interativo de sessões anteriores |
-| `lib/config.py` | ~42 | Carrega/salva `~/.config/frollo/config.json`; detecta first-run |
-| `lib/configure.py` | ~85 | Wizard de configuração (typewriter, gárgulas, stats) |
+| `lib/session.py` | ~130 | Picker interativo de sessões anteriores; fallback resiliente a mudança de schema no jsonl do CLI |
+| `lib/config.py` | ~45 | Carrega/salva `~/.config/frollo/config.json`; detecta first-run; flag `persistent` (default `false`) |
+| `lib/configure.py` | ~95 | Wizard de configuração (typewriter, gárgulas, stats) |
 | `characters/*.json` | ~213 cada | Falas de Victor, Hugo e Gudule por categoria de evento |
-| `frollo.sh` | ~240 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana) |
+| `frollo.sh` | ~275 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana) |
 | `observe.sh` | ~87 | Viewer do observer passivo (jq + tail) |
 | `layout.sh` | ~26 | Layout simples: claude + observer lado a lado |
-| `hooks/log.sh` | ~20 | Coração do sistema — `jq -c` + `flock` (lockfile dedicado) + rotação a 10MB |
+| `hooks/log.sh` | ~22 | Coração do sistema — `jq -c` + `flock` (lockfile dedicado) + rotação a 10MB |
 
 Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto. As quimeras dominam a base numericamente — nenhuma delas faz algo computacionalmente útil. Adicionar uma quarta gárgula é só criar um novo JSON com `name`, `color` e `falas`; nenhum código muda.
 
@@ -158,22 +162,24 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 - Probabilidade 15% por evento (`random.random() > 0.15`); eventos como erro/rate-limit/permissão usam `force=True`
 - **Animação typewriter** em todas as falas
 
-**Typewriter**: `_typewrite()` (em `runner/text.py`) para stdout, `log_animated()` (em `typewriter.py`) para arquivos. Delay variável por caractere via `_char_delay()`:
+**Typewriter**: `RenderQueue` (`runner/render.py`, Fase 3) roda a animação numa thread própria, consumindo uma fila única que preserva a ordem relativa entre chat/thinking/gárgulas — `turn.py` só empurra itens (`render.push_stdout`/`push_file`), nunca chama `_typewrite` diretamente. Delay variável por caractere via `_char_delay()` (`typewriter.py`, hoje só essa função — `log_animated`/`SKIP_FLAG` foram removidos na migração):
 - Base padrão: 15ms (chat/stdout), 1ms (thinking — alto volume), 30ms (gárgulas e falas em arquivo)
 - Variação aleatória: 40%–140% do base por char (`random.uniform(0.4, 1.4)`)
 - Pausas por pontuação: `.!?` longa, `,;:—` média, `\n` fim de linha
 - Hesitação aleatória: 1.5% de chance, 180–450ms
-- Qualquer tecla durante o typewriter do stdout pula o efeito e despeja o resto de uma vez
+- Qualquer tecla durante a animação liga um `threading.Event` compartilhado — o item atual **e o que já estiver enfileirado** despejam sem delay, até a fila esvaziar (aí o flag reseta sozinho). Um `_typewrite` (`runner/text.py`) independente ainda existe para a fala da gárgula de rate-limit, escrita depois que a fila principal já parou (`render.stop()`)
 
 **`/snapshot`**: captura pane tmux atual + logs de tools/thinking (com ANSI colors) em `/tmp/claude-client/snapshot.txt` e envia automaticamente ao agente. O agente vê o estado visual atual sem nenhuma ação adicional do usuário.
 
-**`/refresh`**: reinicia o processo retomando a sessão atual (`--resume`).
+**`/refresh`**: reinicia o processo retomando a sessão atual (`--resume`). Em modo persistente, mata `self.proc` (`_terminate_proc`) antes do `execvp` — que substitui a imagem do processo sem rodar cleanup Python — pra não deixar o `claude` órfão; Ctrl+D (saída do client) faz o mesmo.
 
 **Input multilinha**: `Alt+Enter` insere quebra de linha. `Enter` envia. Cursor suporta ←/→, Home/End, Ctrl+A/E, ↑/↓ navega histórico, backspace atravessa newlines corretamente. `_visual_pos` modela o deferred-wrap do terminal para posicionar o cursor com wrap + multilinha. **Histórico persiste em disco** (`~/.config/frollo/history.json`, override via `$FROLLO_HISTORY`) — carregado no início do processo e salvo a cada envio, sobrevive a `/refresh`, `/new` e reinícios do client.
 
 **Paste de imagem**: `Ctrl+V` lê imagem do clipboard (`wl-paste` no Wayland, `xclip` no X11 — stdlib + subprocess, sem Pillow), insere um marcador `[img]` e envia via `--input-format stream-json` no próximo turno.
 
 **Modos**: Normal e Auto, alternados por `Shift+Tab`. Auto adiciona `--dangerously-skip-permissions`. Normal **não** passa flag de permissão — depende do protocolo de permissão do CLI (`control_request`/`permission_request`) tratado em `runner/permissions.py`, com opção `[a]` para gravar no allowlist do projeto (`.claude/settings.local.json`).
+
+**Modo persistente** (`persistent: true` na config, default `false` — Fase 4): por padrão cada turno spawna um processo `claude` novo, que recarrega o transcript inteiro via `--resume` — custo que cresce com o tamanho da sessão. Com a flag ligada, `_ensure_proc` (`runner/__init__.py`) reaproveita o mesmo processo (`--input-format stream-json` bidirecional) enquanto ele seguir vivo e tiver sido spawnado com o mesmo `(modo, modelo)`; trocar `/model` ou `Shift+Tab` mata o processo atual (`_terminate_proc`) e respawna com `--resume <session_id>` — mesmo custo do modo per-turn ao trocar, nunca pior. `_terminate_proc` fecha stdin + `SIGTERM` com timeout + `SIGKILL` de reserva, porque um processo em modo persistente **não sai sozinho** só porque o stdin fechou (bug conhecido do CLI, [issue #25629](https://github.com/anthropics/claude-code/issues/25629), confirmado ao vivo no spike da Fase 4.1). Não há interrupt via protocolo — Ctrl+C continua matando o processo direto; o próximo turno respawna com `--resume`. Ainda sem verificação de "alguns dias sem sustos" pra virar default (ver `PLANO_MELHORIAS.md`).
 
 **Config + first-run**: na primeira execução (sem `~/.config/frollo/config.json`) roda um wizard (`configure.py`) que pergunta sobre typewriter, gárgulas, pane de stats e auto-resize do thinking. Reconfigurável depois com `--configure`. O `frollo.sh` lê `stats_pane` (cria ou não o pane do Rio Sena) e `thinking_autoresize` (pane pequeno fixo no topo quando desligado) da config.
 
@@ -194,7 +200,7 @@ Os três `characters/*.json` (~640 linhas somadas) são o maior bloco do projeto
 
 Preços e tamanhos de janela de contexto por modelo em `runner/stats.py`.
 
-**Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno, já que o subprocess do `claude` é per-turn). Sem flag, o Frollo usa **sonnet** por default — excelente balance entre qualidade e velocidade, com thinking summarizado visível; use Haiku (`/model haiku`) pra tarefas rápidas/baratas, ou Opus (`/model opus`) quando precisa máxima qualidade. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo. Além disso, o modelo atual fica **sempre visível no título da borda do pane de chat** (`▲ chat · <modelo>`), atualizado no startup, ao fim de cada turno e a cada `/model` — o cliente seta via `tmux select-pane -T` usando `$TMUX_PANE` (chrome do tmux, não rola com o output).
+**Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno — por padrão o subprocess do `claude` é per-turn; em modo persistente, a troca mata e respawna o processo, ver seção "Modo persistente"). Sem flag, o Frollo usa **sonnet** por default — excelente balance entre qualidade e velocidade, com thinking summarizado visível; use Haiku (`/model haiku`) pra tarefas rápidas/baratas, ou Opus (`/model opus`) quando precisa máxima qualidade. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo. Além disso, o modelo atual fica **sempre visível no título da borda do pane de chat** (`▲ chat · <modelo>`), atualizado no startup, ao fim de cada turno e a cada `/model` — o cliente seta via `tmux select-pane -T` usando `$TMUX_PANE` (chrome do tmux, não rola com o output).
 
 **Picker de sessões**: `--resume` sem argumento abre picker interativo com histórico de sessões do projeto atual.
 

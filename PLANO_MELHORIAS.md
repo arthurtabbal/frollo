@@ -309,9 +309,19 @@ Só se digitação em bloco multilinha grande ainda incomodar depois do 5.1; sen
 ## Fase 6 — Documentação
 
 ### 6.1 Atualizar FROLLO.md
+**✅ Concluído.**
 Corrigir os drifts na direção do código novo: badge no prompt (agora real), skip por qualquer tecla
 (agora real), preços, rotação do log, tabela de módulos (`turn.py`, `render.py`), seção do modo
 persistente com a flag de config.
+- Tabela de módulos: linhas atualizadas pra todos os arquivos (contagem real via `wc -l`), `turn.py`
+  e `render.py` adicionados, `typewriter.py` corrigido (16 linhas, só `_char_delay` — `log_animated`
+  removido na Fase 3).
+- Seção "Typewriter" reescrita: `RenderQueue` é quem roda a animação agora, não `_typewrite`/
+  `log_animated` diretamente; skip via `threading.Event` compartilhado.
+- Nova seção "Modo persistente" (config `persistent`, `_ensure_proc`/`_terminate_proc`, achado do
+  spike sobre o processo não sair sozinho, ausência de interrupt via protocolo).
+- `/refresh`/`/model` anotados com o comportamento em modo persistente.
+- Contagem de testes corrigida (84 → 174).
 
 ---
 
