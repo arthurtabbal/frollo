@@ -22,7 +22,6 @@ def _isolate(monkeypatch):
     # patchar só lib.tools._log não cobre o caminho Edit/Write/Read/Bash.
     monkeypatch.setattr("lib.tools.display._log", lambda *a: None)
     monkeypatch.setattr("lib.tools._gargula_comment", lambda *a: ("", ""))
-    monkeypatch.setattr("lib.tools.log_animated", lambda *a, **kw: None)
     monkeypatch.setattr("lib.tools._find_edit_line", lambda *a: None)
 
 

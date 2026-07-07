@@ -1,3 +1,4 @@
+import os
 import re
 import select
 import sys
@@ -46,7 +47,10 @@ def _typewrite(text, delay=0.015):
                 _col = 0 if char == '\n' else _col + 1
                 ready, _, _ = select.select([sys.stdin], [], [], _char_delay(char, delay))
                 if ready:
-                    sys.stdin.readline()
+                    # ICANON desligado durante o turno (ver runner/__init__.py) — qualquer
+                    # tecla acorda o select, não só Enter. os.read consome o que estiver
+                    # no buffer do tty (a tecla que disparou o skip).
+                    os.read(sys.stdin.fileno(), 1024)
                     sys.stdout.write(part[j+1:])
                     sys.stdout.write(''.join(parts[i+1:]))
                     sys.stdout.flush()

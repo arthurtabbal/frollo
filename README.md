@@ -1,5 +1,7 @@
 # Frollo
 
+[![CI](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml/badge.svg)](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml)
+
 > *"Il observait Paris du haut de Notre-Dame."*
 
 A terminal observability layer for [Claude Code](https://claude.ai/code).

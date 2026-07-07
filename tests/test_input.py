@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from unittest.mock import MagicMock
 import lib.input as input_mod
-from lib.input import _visual_pos, InputReader
+from lib.input import _visual_pos, InputReader, _parse_paste
 
 
 def vp(text, idx, cols, prompt=""):
@@ -180,3 +180,79 @@ class TestHistorico:
 
         # ↑ não deve fazer nada
         assert not (r._history and hist_idx > 0)
+
+
+class TestParsePaste:
+    """Parser do bracketed paste (\\x1b[200~ ... \\x1b[201~), isolado do I/O real
+    pra testar com bytes sintéticos (item 5.1)."""
+
+    def _reader_from_chunks(self, chunks):
+        it = iter(chunks)
+        return lambda: next(it, b'')
+
+    def test_conteudo_simples_terminador_no_mesmo_chunk(self):
+        read_more = self._reader_from_chunks([b'ola mundo\x1b[201~'])
+        assert _parse_paste(read_more) == 'ola mundo'
+
+    def test_prefix_ja_contem_terminador(self):
+        # rest[len(_PASTE_START):] pode já trazer conteúdo + terminador no mesmo os.read
+        assert _parse_paste(self._reader_from_chunks([]), prefix=b'abc\x1b[201~') == 'abc'
+
+    def test_terminador_dividido_entre_chunks(self):
+        read_more = self._reader_from_chunks([b'abc\x1b[201', b'~'])
+        assert _parse_paste(read_more) == 'abc'
+
+    def test_multiplos_chunks_antes_do_terminador(self):
+        read_more = self._reader_from_chunks([b'linha1\n', b'linha2\n', b'fim\x1b[201~'])
+        assert _parse_paste(read_more) == 'linha1\nlinha2\nfim'
+
+    def test_newline_preservado_como_texto_literal(self):
+        read_more = self._reader_from_chunks([b'a\nb\nc\x1b[201~'])
+        assert _parse_paste(read_more) == 'a\nb\nc'
+
+    def test_eof_sem_terminador_nao_trava(self):
+        read_more = self._reader_from_chunks([b'sem fim'])
+        assert _parse_paste(read_more) == 'sem fim'
+
+    def test_utf8_multibyte(self):
+        read_more = self._reader_from_chunks(['café ☕'.encode('utf-8') + b'\x1b[201~'])
+        assert _parse_paste(read_more) == 'café ☕'
+
+    def test_cr_lone_normalizado(self):
+        # paste do tmux (paste-buffer) usa `\r` como quebra — deve virar `\n`
+        read_more = self._reader_from_chunks([b'linha1\rlinha2\rfim\x1b[201~'])
+        assert _parse_paste(read_more) == 'linha1\nlinha2\nfim'
+
+    def test_crlf_normalizado(self):
+        read_more = self._reader_from_chunks([b'a\r\nb\r\nc\x1b[201~'])
+        assert _parse_paste(read_more) == 'a\nb\nc'
+
+    def test_cr_dividido_entre_chunks_nao_vira_dupla_quebra(self):
+        # `\r\n` partido no meio de dois os.read não pode virar `\n\n`
+        read_more = self._reader_from_chunks([b'a\r', b'\nb\x1b[201~'])
+        assert _parse_paste(read_more) == 'a\nb'
+
+
+class TestPromptProvider:
+    """prompt_provider permite ao chamador (ClaudeClient) incluir badges extras
+    (ex: modelo) no prompt; _vprompt deve refletir a largura visual real."""
+
+    def test_sem_provider_usa_default(self):
+        mode = MagicMock(value="normal")
+        r = InputReader([mode])
+        assert r._vprompt() == "(normal) >_ "
+
+    def test_com_provider_usa_texto_do_provider(self):
+        mode = MagicMock(value="normal")
+        r = InputReader([mode], prompt_provider=lambda: "\x1b[35msonnet\x1b[0m (normal) >_ ")
+        assert r._vprompt() == "sonnet (normal) >_ "
+
+    def test_vprompt_muda_com_o_provider_mesmo_modo(self):
+        """Badge de modelo muda a largura mesmo sem o modo mudar — cursor tem que
+        acompanhar, senão desalinha (bug que este item corrige)."""
+        mode = MagicMock(value="normal")
+        r = InputReader([mode], prompt_provider=lambda: "\x1b[35mopus\x1b[0m (normal) >_ ")
+        vprompt_curto = r._vprompt()
+        r._prompt_provider = lambda: "\x1b[35mclaude-opus-4-5-longuinho\x1b[0m (normal) >_ "
+        vprompt_longo = r._vprompt()
+        assert len(vprompt_longo) > len(vprompt_curto)

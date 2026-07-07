@@ -55,6 +55,19 @@ def _show_perm_banner(tool_name, inp=None, *, blocked=False):
             sys.stdout.flush()
 
 
+def _write_stdin(proc, data):
+    """Escreve em proc.stdin tolerando pipe morto (turno com imagem fecha stdin
+    após o envio; um control_request/permission_request tardio não pode escrever)."""
+    try:
+        proc.stdin.write(data)
+        proc.stdin.flush()
+        return True
+    except (ValueError, BrokenPipeError):
+        sys.stdout.write(f"{DIM}(stdin do turno já fechado — resposta de permissão não pôde ser enviada, tratando como negado){RESET}\n")
+        sys.stdout.flush()
+        return False
+
+
 def _handle_control_request(event, proc, cwd):
     """Protocolo control_request/control_response (--permission-prompt-tool stdio).
     Dispara ANTES da tool executar — respondendo allow o turno continua normal."""
@@ -85,8 +98,8 @@ def _handle_control_request(event, proc, cwd):
 
     resp = json.dumps({"type": "control_response", "request_id": request_id,
                        "response": {"behavior": behavior}})
-    proc.stdin.write(resp + "\n")
-    proc.stdin.flush()
+    if not _write_stdin(proc, resp + "\n"):
+        return False
     return behavior == "allow"
 
 
@@ -130,15 +143,11 @@ def _handle_permission(event, proc):
     if ch == 'a':
         sys.stdout.write(f"a  {DIM}(permitir sempre){RESET}\n\n")
         sys.stdout.flush()
-        proc.stdin.write("a\n")
-        proc.stdin.flush()
-        return True
+        return _write_stdin(proc, "a\n")
     elif ch == 'y':
         sys.stdout.write(f"y  {DIM}(permitido){RESET}\n\n")
         sys.stdout.flush()
-        proc.stdin.write("y\n")
-        proc.stdin.flush()
-        return True
+        return _write_stdin(proc, "y\n")
     else:
         sys.stdout.write(f"n  {DIM}(negado){RESET}\n\n")
         sys.stdout.flush()

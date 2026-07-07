@@ -37,7 +37,7 @@ def _short_model(name):
 MODEL_ALIASES = ("opus", "sonnet", "haiku")
 from lib.session import pick_session
 from lib.input import InputReader
-from lib.runner import run_turn
+from lib.runner import run_turn, _terminate_proc
 from lib import config as _config
 from lib.configure import run_configure
 from lib.usage import fetch_usage
@@ -74,7 +74,7 @@ class ClaudeClient:
         TOOLS_LOG.write_text("")
 
         self._mode_ref = [self.mode]
-        self._input_reader = InputReader(self._mode_ref)
+        self._input_reader = InputReader(self._mode_ref, prompt_provider=self._prompt)
 
     def _sync_mode(self):
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
@@ -103,7 +103,10 @@ class ClaudeClient:
             pass
 
     def _prompt(self):
-        if self.mode == Mode.AUTO:
+        # Lê _mode_ref (não self.mode) porque InputReader muda o modo ao vivo via
+        # Shift+Tab durante a edição, antes que _sync_mode() rode — self.mode ficaria
+        # um passo atrasado no meio da digitação.
+        if self._mode_ref[0] == Mode.AUTO:
             badge = f"{TOOLS_BASH}auto{RESET}"
         else:
             badge = f"{DIM}normal{RESET}"
@@ -326,6 +329,10 @@ class ClaudeClient:
                 if user_input.strip() == "/new":
                     sys.stdout.write(f"{DIM}novo contexto…{RESET}\n")
                     sys.stdout.flush()
+                    # execvp substitui a imagem do processo sem rodar cleanup Python —
+                    # em modo persistente self.proc pode seguir vivo (é o propósito da
+                    # Fase 4); sem isso viraria órfão escrevendo num stdin sem leitor.
+                    _terminate_proc(self.proc)
                     argv = sys.argv[:]
                     if "--resume" in argv:
                         i = argv.index("--resume")
@@ -338,6 +345,7 @@ class ClaudeClient:
                         continue
                     sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
                     sys.stdout.flush()
+                    _terminate_proc(self.proc)
                     os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
                 sys.stdout.write('\n')
                 sys.stdout.flush()
@@ -359,6 +367,7 @@ class ClaudeClient:
                 sys.stdout.flush()
                 continue
             except EOFError:
+                _terminate_proc(self.proc)
                 print(f"\n{DIM}saindo...{RESET}")
                 break
             except Exception as e:
@@ -367,6 +376,9 @@ class ClaudeClient:
                 err_log = RUNDIR / "err.log"
                 with open(err_log, "a") as f:
                     f.write(err)
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc.wait()
                 print(f"\n{YELLOW}erro inesperado (ver {err_log}):{RESET} {e}\n")
                 continue
 

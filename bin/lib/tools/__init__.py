@@ -2,13 +2,12 @@ import os
 
 from ..theme import DIM, RESET, TOOLS_BASH, TOOLS_EDIT, TOOLS_WRITE, TOOLS_READ, TOOLS_AGENT_IC, TOOLS_WEB, TOOLS_TODO
 from ..gargulas import _gargula_comment
-from ..typewriter import log_animated
 from .. import config
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
 from .nvim import _nvim_open, _find_edit_line
 
-def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
+def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin="", render=None):
     _clear_tools_pane()
     name = block.get("name", "")
     inp  = block.get("input", {})
@@ -65,7 +64,11 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin=""):
         if prefix:
             _log(TOOLS_LOG, '\n')
             _log(TOOLS_LOG, prefix)
-            log_animated(TOOLS_LOG, fala)
+            if render is not None:
+                render.push_file(TOOLS_LOG, fala)
+                render.join()
+            else:
+                _log(TOOLS_LOG, fala)
             _log(TOOLS_LOG, '\n')
 
 

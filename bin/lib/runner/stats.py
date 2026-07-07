@@ -1,9 +1,17 @@
 from ..theme import DIM, RESET, YELLOW
 
+# Preços por milhão de tokens (input, output). Prefixos específicos antes do
+# genérico correspondente — dict preserva ordem de inserção e _model_price para
+# no primeiro match. claude-opus-4-1/4-0 são as versões antigas (mantêm 15/75);
+# o genérico claude-opus-4 cobre as versões novas (4.5+, incl. 4.7/4.8) a 5/25.
+# verificado jul/2026
 _MODEL_PRICES = {
-    "claude-opus-4":   (15.0, 75.0),
-    "claude-sonnet-4":  (3.0, 15.0),
-    "claude-haiku-4":  (0.80,  4.0),
+    "claude-opus-4-1":   (15.0, 75.0),
+    "claude-opus-4-0":   (15.0, 75.0),
+    "claude-opus-4":      (5.0, 25.0),
+    "claude-sonnet-4":    (3.0, 15.0),
+    "claude-haiku-4-5":   (1.0,  5.0),
+    "claude-haiku-4":    (0.80,  4.0),
 }
 
 _MODEL_CTX = {
@@ -51,19 +59,42 @@ def _quota_color(pct):
     return DIM
 
 
+def _limit_color(pct, severity=None):
+    """Cor de uma cota: honra a severidade do servidor quando presente; senão
+    cai nos thresholds de porcentagem (alerta visual precoce)."""
+    if severity == 'warning':
+        return YELLOW
+    if severity in ('critical', 'exceeded', 'blocked', 'severe'):
+        return '\033[91m'
+    return _quota_color(pct)
+
+
 def _render_quota_line(usage):
-    """usage: dict com session_pct/week_pct/session_reset, ou None/{} se ainda não carregou."""
+    """usage: dict com `limits` detalhado (sessão/semana/por-modelo) e/ou as
+    chaves legadas session_pct/week_pct/session_reset. None/{} = ainda carregando."""
     if not usage:
         return f"\r\033[2K{DIM}{'cota':>8}  ◎   carregando…{RESET}"
+
+    limits = usage.get('limits')
+    if limits:
+        parts = []
+        for lim in limits:
+            col = _limit_color(lim.get('pct'), lim.get('severity'))
+            rst = f" {DIM}↺ {lim['reset']}{RESET}" if lim.get('reset') else ""
+            parts.append(f"{lim['label']} {col}{lim['pct']}%{RESET}{rst}")
+        body = f"  {DIM}·{RESET}  ".join(parts)
+        return f"\r\033[2K{DIM}{'cota':>8}{RESET}  ◎   {body}"
+
+    # Fallback legado (cache last_quota.json antigo, sem `limits`).
     s_pct = usage.get('session_pct')
     w_pct = usage.get('week_pct')
     s_rst = usage.get('session_reset', '')
-    s_part = f"{_quota_color(s_pct)}{s_pct}%{RESET}" if s_pct is not None else f"{DIM}?%{RESET}"
-    w_part = f"{_quota_color(w_pct)}{w_pct}%{RESET}" if w_pct is not None else f"{DIM}?%{RESET}"
+    s_part = f"{_limit_color(s_pct)}{s_pct}%{RESET}" if s_pct is not None else f"{DIM}?%{RESET}"
+    w_part = f"{_limit_color(w_pct)}{w_pct}%{RESET}" if w_pct is not None else f"{DIM}?%{RESET}"
     rst_part = f"  {DIM}↺ {s_rst}{RESET}" if s_rst else ""
     return (
         f"\r\033[2K{DIM}{'cota':>8}{RESET}  ◎   "
-        f"session {s_part}  ·  week {w_part}{rst_part}"
+        f"sessão {s_part}  {DIM}·{RESET}  semana {w_part}{rst_part}"
     )
 
 
