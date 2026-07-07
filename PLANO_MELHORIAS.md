@@ -279,8 +279,17 @@ Depois de alguns dias com `persistent: true` sem sustos, virar default e documen
 ## Fase 5 — Input (independente, pode intercalar)
 
 ### 5.1 Bracketed paste — `lib/input.py`
-**✅ Implementado** — 171 testes passando (164 anteriores + 7 novos em `TestParsePaste`).
-Verificação manual do autor ainda pendente (colar texto multilinha real via terminal).
+**✅ Implementado e verificado manualmente pelo autor** — 174 testes passando (164 originais + 10
+novos em `TestParsePaste`). Ctrl+Shift+V (paste nativo do terminal) e `prefix + ]` do tmux
+(paste-buffer) testados com texto grande: sem enter automático, cursor/backspace/histórico ok.
+
+**Bug encontrado e corrigido no teste manual:** o paste-buffer do tmux usa `\r` solto como quebra
+de linha (o terminal nativo usa `\n`). `_redraw`/`_visual_pos` só entendiam `\n` — um `\r` cru era
+escrito literalmente em raw mode (sem `OPOST`), movendo o cursor pra coluna 0 sem descer e
+sobrescrevendo a linha; a cada seta/backspace o `_redraw` repetia o erro e "comia" uma linha do
+chat acima do prompt. Fix: `_parse_paste` normaliza `\r\n` e `\r` solto para `\n` antes de decodificar
+o conteúdo colado (`\r\n` partido entre dois `os.read` também é tratado — só normaliza depois do
+buffer acumulado inteiro, pra não virar `\n\n`).
 
 Colar texto multilinha envia na primeira quebra de linha (`input.py:216` trata `\n` como submit) — é
 a razão de existir o `/paste`. Além disso, cada keypress fora do fim da linha dispara `_redraw`

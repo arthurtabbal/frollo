@@ -28,7 +28,11 @@ def _parse_paste(read_more, prefix=b''):
         buf += chunk
     end = buf.find(_PASTE_END)
     content = buf if end == -1 else buf[:end]
-    return content.decode('utf-8', errors='replace')
+    # Normaliza quebras de linha: o paste do tmux (paste-buffer) usa `\r`, o
+    # terminal nativo usa `\n`. `line`/`_visual_pos`/`_redraw` só entendem `\n` —
+    # um `\r` cru sobrescreveria a linha em raw mode e bagunçaria o cálculo de cursor.
+    text = content.decode('utf-8', errors='replace')
+    return text.replace('\r\n', '\n').replace('\r', '\n')
 
 HISTORY_PATH = Path(os.environ.get(
     "FROLLO_HISTORY",

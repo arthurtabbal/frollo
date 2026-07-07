@@ -218,6 +218,20 @@ class TestParsePaste:
         read_more = self._reader_from_chunks(['café ☕'.encode('utf-8') + b'\x1b[201~'])
         assert _parse_paste(read_more) == 'café ☕'
 
+    def test_cr_lone_normalizado(self):
+        # paste do tmux (paste-buffer) usa `\r` como quebra — deve virar `\n`
+        read_more = self._reader_from_chunks([b'linha1\rlinha2\rfim\x1b[201~'])
+        assert _parse_paste(read_more) == 'linha1\nlinha2\nfim'
+
+    def test_crlf_normalizado(self):
+        read_more = self._reader_from_chunks([b'a\r\nb\r\nc\x1b[201~'])
+        assert _parse_paste(read_more) == 'a\nb\nc'
+
+    def test_cr_dividido_entre_chunks_nao_vira_dupla_quebra(self):
+        # `\r\n` partido no meio de dois os.read não pode virar `\n\n`
+        read_more = self._reader_from_chunks([b'a\r', b'\nb\x1b[201~'])
+        assert _parse_paste(read_more) == 'a\nb'
+
 
 class TestPromptProvider:
     """prompt_provider permite ao chamador (ClaudeClient) incluir badges extras
