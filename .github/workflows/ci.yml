@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install pytest (test-only dependency; not shipped)
+        run: python3 -m pip install pytest
+
       - name: Run Python tests
         run: python3 -m pytest tests/
 
