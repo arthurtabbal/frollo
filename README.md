@@ -2,32 +2,58 @@
 
 [![CI](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml/badge.svg)](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml)
 
-> *"Il observait Paris du haut de Notre-Dame."*
+> **A human-first observability layer for coding agents.**
 
-A terminal observability layer for [Claude Code](https://claude.ai/code).
+Coding agents are becoming increasingly capable.
 
-The name carries a double meaning: **Claude** is both the AI model and **Claude Frollo**, the archdeacon who watches over Paris from the heights of Notre-Dame. This project builds the window from which Claude is observed.
+They're also becoming increasingly difficult to follow.
+
+While an agent is thinking, exploring files, executing tools and rewriting your code, most interfaces reduce all of that to a blinking cursor and a few lines of conversation.
+
+Frollo takes a different approach.
+
+Instead of asking the agent to be more autonomous, it asks a simpler question:
+
+> **What is the agent actually doing right now?**
+
+---
+
+## What is Frollo?
+
+Frollo is an observability layer for coding agents.
+
+Today it integrates with **Claude Code**, capturing its structured event stream and presenting it through a terminal interface designed for real-time inspection.
+
+Rather than treating the agent as a black box, Frollo exposes its execution in a way that's easier to understand, debug and trust.
+
+Think of it as somewhere between:
+
+* `top` for your coding agent;
+* a flight recorder;
+* a debugger;
+* and, occasionally, a concerned gargoyle.
 
 ---
 
 ## Features
 
-- **Passive observer** — hooks into every Claude Code session system-wide via `~/.claude/settings.json`; renders tool calls, edits, and commands with colors and icons as they happen, across all open sessions simultaneously
-- **Active client** (`frollo`) — full TUI wrapping `claude`, with typewriter rendering, separate panes for thinking and tool calls, and Paris city art as ambient backdrop
-- **Three gargoyles** — Victor (pompous), Hugo (bored, hungry), Gudule (nihilistic) comment on tool calls at 15% probability, always typewritten; their lines live in `bin/characters/*.json`
-- **Hellfire spinner** — animated flame gradient while Claude thinks, cycling through colors in the `_F` palette
+* **Thinking, live** — the model's reasoning streams into its own pane as it happens.
+* **Tool monitoring** — every tool call rendered in real time, in its own pane, with occasional commentary from three gargoyles.
+* **Execution statistics** — tokens, cost, context window and subscription quota, per turn and per session.
+* **Passive observer** — a system-wide hook captures every Claude Code session on the machine into an append-only JSONL event log; `observe.sh` tails and renders the stream.
+* **Typewriter pacing** — output is paced so you can follow the agent in real time instead of staring at a spinner and then receiving a wall of text. Any keypress skips ahead.
+* **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
+* **Session picker** — resume any previous session interactively.
 
 ---
 
 ## Requirements
 
-- [Claude Code](https://claude.ai/code) CLI (`claude`)
-- `tmux` ≥ 3.1 (the layout uses `split-window -l <percentage>`, added in 3.1)
-- Python 3.10+
-- `jq` 1.6+
-- `nvim` (optional — used in the editor pane)
-
----
+* [Claude Code](https://claude.ai/code) CLI (`claude`)
+* `tmux` ≥ 3.1
+* Python 3.10+
+* `jq` 1.6+
+* `nvim` (optional — editor pane)
 
 ## Install
 
@@ -37,73 +63,77 @@ cd frollo
 ./install.sh
 ```
 
-`install.sh` installs the hook script and configures it in `~/.claude/settings.json` (merging safely with any existing hooks), then symlinks `frollo` into `~/.local/bin`.
-
-If `~/.local/bin` is not in your `PATH`, add this to `~/.bashrc` or `~/.zshrc`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
----
+`install.sh` registers the observer hooks in `~/.claude/settings.json` (merging safely with any hooks you already have) and symlinks `frollo` into `~/.local/bin`.
 
 ## Usage
 
-### Full layout
-
 ```bash
-frollo                        # open in current directory
-frollo /path/to/project       # open in specific project
+frollo                        # full layout in the current directory
+frollo /path/to/project       # full layout in a specific project
+./bin/observe.sh              # passive observer only: the raw event stream,
+                              # from every Claude Code session on the machine
 ```
 
-Opens a tmux session with six panes:
+The full layout opens a tmux session:
 
 ```
 ┌──── nvim editor ───────────────────┬──── thinking ─────────────────────┐
-│                                    │    céu · lua                       │
+│                                    │                                    │
 │              60%                   ├──── chat ──────────────────────────┤
 │                                    ├──── stats (Rio Sena) ──────────────┤
 ├──── terminal ──────────────────────├──── tools ─────────────────────────┤
-│            30%                     │    paris urbana                    │
+│              30%                   │                                    │
 └────────────────────────────────────┴────────────────────────────────────┘
 ```
-
-### Passive observer only
-
-```bash
-./bin/observe.sh
-```
-
-Tails `~/.claude/observer.jsonl` and renders tool calls from all Claude Code sessions running on the machine. Each event is tagged with `[project]` and timestamp. No layout, no client — just the event stream.
 
 ### Client commands
 
 | Key / Command | Effect |
 |---|---|
-| `/snapshot` | Capture current visual state and send to the agent |
+| `/snapshot` | Capture current visual state and send it to the agent |
 | `/paste` | Open `$EDITOR` for long text; sends on close |
-| `/refresh` | Restart, resuming current session |
+| `/refresh` | Restart, resuming the current session |
 | `/new` | Restart with a fresh context |
-| `/model [name]` | Show or switch model (`opus`/`sonnet`/`haiku` or full ID), effective next turn |
+| `/model [name]` | Show or switch model (`opus`/`sonnet`/`haiku` or full ID) |
 | `Shift+Tab` | Toggle Normal ↔ Auto mode |
 | `Alt+Enter` | Insert newline (multiline input) |
 | `Ctrl+V` | Paste an image from the clipboard |
-| `Ctrl+C` | Cancel running turn (or clear line if idle) |
+| `Ctrl+C` | Cancel the running turn (or clear the line if idle) |
 | `Ctrl+D` | Exit |
-
-> **Tip — run Frollo with Sonnet.** Sonnet streams its reasoning into the thinking pane (`display: "summarized"`), which is half the point of Frollo. Opus 4.8/4.7 omit the thinking text at the API level (`display: "omitted"` — only an encrypted `signature` is returned, unrecoverable by the client), so the pane just shows a "thinking omitted" note. If you do use Opus, consider turning off `thinking_autoresize` in the config so the empty pane stays small.
 
 ---
 
-## The Gargoyles
+## Design Principles
 
-Three chimeras from the cathedral — **Victor**, **Hugo**, and **Gudule** — comment on what they observe. Inspired by the chimeras Victor Hugo describes in the novel, which Quasimodo lives among.
+### Human-first
 
-- **Victor** (purple) — pompous, theatrical: *"Mon Dieu! Que comando audacioso!"*
-- **Hugo** (green) — bored, hungry: *"heh. isso vai dar certo. acho."*
-- **Gudule** (lilac) — nihilistic, melancholic: *"mais um."*, *"..."*
+Coding agents should amplify developers, not replace them.
 
-They appear in the tools pane (reacting to Bash, Edit, Write, Read) and at turn boundaries (thinking, errors, rate limits, permission prompts). 15% probability per event; error/rate-limit/permission events are forced. Each gargoyle is a JSON file in `bin/characters/` with a `name`, a `color`, and `falas` keyed by event category — adding a fourth requires no code changes.
+The human remains part of the loop.
+
+### Observe before optimizing
+
+It's difficult to improve a system you cannot see.
+
+Visibility comes first.
+
+### Everything is an event
+
+Thinking. Tool calls. File operations. Statistics.
+
+If it happens, it should be observable.
+
+### Terminal-native
+
+Frollo embraces the Unix philosophy.
+
+It integrates with terminals, tmux and existing developer workflows instead of replacing them.
+
+### Standard library only
+
+The Python code depends exclusively on the standard library.
+
+pip is the main supply-chain attack vector in Python, and the easiest dependency to audit is the one you don't have. There is no `requirements.txt`, and there won't be.
 
 ---
 
@@ -113,42 +143,86 @@ They appear in the tools pane (reacting to Bash, Edit, Write, Read) and at turn 
 Passive observer:
 Claude Code (any session)
   → PreToolUse / PostToolUse hooks (async)
-    → hooks/log.sh  →  ~/.claude/observer.jsonl
-      → bin/observe.sh  (tail -n 0 -f | jq)
+    → ~/.claude/observer.jsonl (append-only)
+      → observe.sh (tail -f | jq)
 
 Active client:
-bin/chat.py
-  → claude --print --output-format stream-json --verbose --include-partial-messages
-    → text / thinking deltas   →  chat pane + thinking pane (typewriter)
-    → tool_use / tool_result   →  tools pane + gargoyles
-    → usage / cost             →  stats pane (Rio Sena)
+chat.py
+  → claude --output-format stream-json (subprocess)
+    → text deltas      →  chat pane (typewriter)
+    → thinking deltas  →  thinking pane
+    → tool events      →  tools pane + gargoyles
+    → usage / cost     →  stats pane
 ```
 
-Hooks are global (`~/.claude/settings.json`) — the observer captures all Claude Code sessions at once. Events carry `.cwd` and `.session_id` to distinguish them. `async: true` ensures the observed system never waits on the observer.
+Hooks are async and the log is append-only: the observed system never waits on the observer.
 
-`runner` and `tools` are packages, not single files; gargoyle lines live in `bin/characters/*.json`.
-
-| File | Lines | Responsibility |
-|---|---|---|
-| `bin/chat.py` | ~320 | Main TUI loop, commands |
-| `bin/lib/runner/` | ~740 | Turn execution: subprocess, streaming, spinner, panes, permissions, stats, typewriter |
-| `bin/lib/tools/` | ~190 | Tool call log in the tools pane, per-tool dispatch, nvim jump |
-| `bin/lib/input.py` | ~254 | Raw input, cursor, multiline, history, image paste |
-| `bin/lib/gargulas.py` | ~91 | Loads the gargoyles from `characters/*.json` |
-| `bin/lib/typewriter.py` | ~39 | File typewriter + per-char delay |
-| `bin/lib/theme.py` | ~147 | ANSI colors, flames, markdown |
-| `bin/lib/session.py` | ~103 | Session picker (`--resume`) |
-| `bin/lib/config.py` / `configure.py` | ~127 | Config file + first-run wizard |
-| `bin/characters/*.json` | ~640 | Victor, Hugo, Gudule lines by event category |
-| `bin/frollo.sh` | ~240 | tmux layout + ASCII art |
-| `bin/observe.sh` | ~87 | Passive observer viewer |
-| `hooks/log.sh` | 11 | Core hook — `jq -c` + `flock` + `tee -a` |
+Simple on purpose.
 
 ---
 
-## About the theme
+## The Gargoyles
 
-The project is themed exclusively on Victor Hugo's *Notre-Dame de Paris* (1831), which is public domain. The Disney adaptation (1996) is under copyright — no lyrics, no specific visual designs from that version.
+Three chimeras from the cathedral comment on what they observe — inspired by the chimeras Victor Hugo describes, among which Quasimodo lives.
+
+* **Victor** (purple) — pompous, theatrical.
+* **Hugo** (green) — bored, hungry.
+* **Gudule** (lilac) — nihilistic, melancholic.
+
+Each gargoyle is a JSON file in `bin/characters/` with a name, a color and lines keyed by event category. Adding a fourth requires no code changes. None of them does anything computationally useful, and that is fine.
+
+---
+
+## Roadmap
+
+The roadmap focuses on expanding observability rather than replacing existing coding agents.
+
+Planned and exploratory work is tracked in the issues:
+
+* [Behavioral agent metrics](https://github.com/arthurtabbal/frollo/issues/1) — characterize *how* an agent works, not just whether it succeeded.
+* [Canonical event protocol](https://github.com/arthurtabbal/frollo/issues/2) — decouple the UI from agent-specific event schemas.
+* [Adapter architecture & capabilities](https://github.com/arthurtabbal/frollo/issues/3) — graceful degradation across agents that expose different information.
+* [OpenTelemetry ingestion](https://github.com/arthurtabbal/frollo/issues/4) — consume GenAI traces as an event source.
+* [Experimental native runtime](https://github.com/arthurtabbal/frollo/issues/5) — validate the protocol by producing events, not just consuming them.
+* [The umbrella vision](https://github.com/arthurtabbal/frollo/issues/6) — agent-agnostic observability.
+
+Every item serves the same objective:
+
+> Make coding agents easier to understand.
+
+More features are planned. The backlog grows faster than the codebase.
+
+---
+
+## Long-Term Vision
+
+Today, Frollo is built around Claude Code.
+
+Tomorrow, it may support multiple coding agents through a common event model.
+
+The long-term goal is not to build yet another IDE.
+
+Editors already exist. Coding agents already exist.
+
+Frollo explores a different space: helping humans understand, inspect and collaborate with autonomous software engineering systems.
+
+If the future belongs to coding agents, they shouldn't remain black boxes.
+
+---
+
+## Theme
+
+Frollo draws its visual identity and terminology from Victor Hugo's *The Hunchback of Notre-Dame* (1831), which is in the public domain. The Disney adaptation (1996) is not — no lyrics or visual designs from that version are used.
+
+No actual cathedrals were modified during development.
+
+---
+
+## Contributing
+
+Ideas, bug reports and pull requests are always welcome.
+
+Whether you're interested in terminals, observability, coding agents, or simply enjoy watching autonomous software think out loud, you're in good company.
 
 ---
 
