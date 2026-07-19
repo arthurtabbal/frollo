@@ -38,6 +38,7 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku")
 from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
+from lib.runner.codex import run_codex_turn
 from lib import config as _config
 from lib.configure import run_configure
 from lib.usage import fetch_usage
@@ -55,10 +56,11 @@ MODES = [Mode.NORMAL, Mode.AUTO]
 
 
 class ClaudeClient:
-    def __init__(self, resume_id=None, model=None):
+    def __init__(self, resume_id=None, model=None, backend="claude"):
         self.resume_id = resume_id        # None = nova sessão, "" = --continue, "<id>" = --resume <id>
         self.session_id = None            # preenchido após o primeiro turno via evento result
         self.first_turn = True
+        self.backend = backend
         self.mode = Mode.NORMAL
         self.model = model                # None = default do claude CLI; senão alias/id passado pra --model
         self.observed_model = ""          # preenchido via stream events (message_start.model)
@@ -110,12 +112,14 @@ class ClaudeClient:
             badge = f"{TOOLS_BASH}auto{RESET}"
         else:
             badge = f"{DIM}normal{RESET}"
-        model_display = _short_model(self.model or self.observed_model)
+        backend = getattr(self, "backend", "claude")
+        provider_badge = f"{PURPLE}codex{RESET} " if backend == "codex" else ""
+        model_display = _short_model(self.observed_model if backend == "codex" else (self.model or self.observed_model))
         if model_display:
             model_badge = f"{PURPLE}{model_display}{RESET} "
         else:
             model_badge = ""
-        return f"{model_badge}{badge} {WHITE}>_{RESET} "
+        return f"{provider_badge}{model_badge}{badge} {WHITE}>_{RESET} "
 
     def _print_header(self):
         R = RESET
@@ -139,8 +143,9 @@ class ClaudeClient:
             f"{HEADER_DARK}---''\"'-'\"\"\"'-'\"''---{R}",
         ]
         quote = random.choice(_QUOTES)
+        title = "Codex Frollo Observer" if getattr(self, "backend", "claude") == "codex" else "Claude Frollo Observer"
         labels = [
-            f"  {HEADER_TITLE}Claude Frollo Observer{R}",
+            f"  {HEADER_TITLE}{title}{R}",
             f"  {DIM}Notre-Dame de Paris · 1482{R}",
             f"  {DIM}{cwd_display}{R}",
             f"  {DIM}Shift+Tab: alterna modo  Ctrl+C: sair{R}",
@@ -274,6 +279,11 @@ class ClaudeClient:
 
         threading.Thread(target=_bg, daemon=True).start()
 
+    def _run_turn(self, message, images=None):
+        if getattr(self, "backend", "claude") == "codex":
+            return run_codex_turn(self, message, images=images)
+        return run_turn(self, message, images=images)
+
     def chat(self):
         self._print_header()
         self._update_model_title()
@@ -304,16 +314,21 @@ class ClaudeClient:
                     snapshot = _snapshot_buf[0] or ""
                     sys.stdout.write(f"\n{DIM}snapshot capturado — enviando ao agente…{RESET}\n\n")
                     sys.stdout.flush()
-                    run_turn(self, f"[snapshot do estado atual do terminal]\n\n{snapshot}")
+                    self._run_turn(f"[snapshot do estado atual do terminal]\n\n{snapshot}")
                     continue
                 if user_input.strip() == "/paste":
                     content = self._paste()
                     if content:
                         sys.stdout.write('\n')
                         sys.stdout.flush()
-                        run_turn(self, content)
+                        self._run_turn(content)
                     continue
                 if user_input.strip().startswith("/model"):
+                    if getattr(self, "backend", "claude") == "codex":
+                        current = self.observed_model or "default do codex"
+                        sys.stdout.write(f"\n{DIM}backend codex experimental usa: {RESET}{current}\n")
+                        sys.stdout.flush()
+                        continue
                     parts = user_input.strip().split(maxsplit=1)
                     if len(parts) == 1:
                         current = self.model or self.observed_model or "default"
@@ -350,7 +365,7 @@ class ClaudeClient:
                 sys.stdout.write('\n')
                 sys.stdout.flush()
                 images = [pending_image] if pending_image else None
-                while run_turn(self, user_input, images=images):
+                while self._run_turn(user_input, images=images):
                     user_input = getattr(self, '_retry_context', '.')
                     images = None
                 self._update_model_title()
@@ -395,6 +410,8 @@ if __name__ == "__main__":
                        help="reconfigura preferências (typewriter, gárgulas, stats)")
         p.add_argument("--model", metavar="NAME",
                        help="modelo do claude: alias (opus|sonnet|haiku) ou ID completo")
+        p.add_argument("--backend", choices=("claude", "codex"), default="claude",
+                       help="backend experimental: claude (default) ou codex")
         mg = p.add_mutually_exclusive_group()
         for alias in MODEL_ALIASES:
             mg.add_argument(f"--{alias}", dest="model_alias", action="store_const", const=alias,
@@ -403,7 +420,12 @@ if __name__ == "__main__":
 
         if args.model and args.model_alias:
             p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
-        model = args.model or args.model_alias or "sonnet"
+        if args.backend == "codex":
+            if args.model or args.model_alias:
+                p.error("--backend codex ainda não suporta seleção de modelo")
+            model = None
+        else:
+            model = args.model or args.model_alias or "sonnet"
 
         resume_id = None
         if args.resume is not None:
@@ -416,7 +438,9 @@ if __name__ == "__main__":
         if args.configure or _first_run:
             run_configure(first_run=_first_run)
 
-        ClaudeClient(resume_id=resume_id, model=model).chat()
+        ClaudeClient(resume_id=resume_id, model=model, backend=args.backend).chat()
+    except SystemExit:
+        raise
     except (KeyboardInterrupt, EOFError):
         pass
     except BaseException as e:

@@ -13,13 +13,32 @@ REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CLIENT="$REPO_DIR/bin/chat.py"
 
 command -v tmux   >/dev/null 2>&1 || { echo "erro: tmux não encontrado — instale com: sudo apt install tmux"; exit 1; }
-command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
 
 # Primeiro arg sem "-" é o diretório do projeto; o resto vai pro chat.py
 PROJ_DIR="$(pwd)"
 if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
     PROJ_DIR="$(realpath "$1")"
     shift
+fi
+
+_BACKEND="claude"
+_next_is_backend=false
+for _arg in "$@"; do
+    if [[ "$_next_is_backend" == "true" ]]; then
+        _BACKEND="$_arg"
+        _next_is_backend=false
+        continue
+    fi
+    case "$_arg" in
+        --backend) _next_is_backend=true ;;
+        --backend=*) _BACKEND="${_arg#--backend=}" ;;
+    esac
+done
+
+if [[ "$_BACKEND" == "codex" ]]; then
+    command -v codex >/dev/null 2>&1 || { echo "erro: codex CLI não encontrado — instale/configure o Codex CLI"; exit 1; }
+else
+    command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
 fi
 
 RUNDIR="/tmp/claude-client-$$"
