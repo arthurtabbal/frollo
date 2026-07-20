@@ -6,7 +6,14 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 import lib.runner.codex as codex_mod
-from lib.runner.codex import _CodexAdapter, _CodexRenderer, _codex_turn_start_params
+from lib.runner.codex import (
+    _CODEX_DONE_DRAIN_GRACE,
+    _CodexAdapter,
+    _CodexRenderer,
+    _codex_done_drain_finished,
+    _codex_turn_start_params,
+)
+from lib.runner.protocol import SCHEMA
 from lib.theme import CHAT_FG, RESET
 
 
@@ -57,6 +64,7 @@ class TestCodexAdapter:
             "params": {"turnId": "turn-1", "itemId": "msg-1", "delta": "oi"},
         })
         assert events[0]["kind"] == "message.assistant.delta"
+        assert events[0]["schema"] == SCHEMA
         assert events[0]["payload"]["delta"] == "oi"
         assert events[0]["item_id"] == "msg-1"
 
@@ -203,6 +211,21 @@ class TestCodexAdapter:
         ]
         assert payload["summary_text"] == "**Compondo resposta**\n**Resumo final**\n\nFechando a análise."
 
+    def test_turn_completed_drena_eventos_tardios_antes_de_devolver_prompt(self):
+        last_event_at = 10.0
+
+        assert not _codex_done_drain_finished(False, last_event_at, last_event_at + 999)
+        assert not _codex_done_drain_finished(
+            True,
+            last_event_at,
+            last_event_at + _CODEX_DONE_DRAIN_GRACE - 0.01,
+        )
+        assert _codex_done_drain_finished(
+            True,
+            last_event_at,
+            last_event_at + _CODEX_DONE_DRAIN_GRACE + 0.01,
+        )
+
 
 class TestCodexRenderer:
     def _renderer(self):
@@ -277,6 +300,14 @@ class TestCodexRenderer:
         assert "sem resumo textual" not in logged
         render.push_file.assert_called_once()
         render.join.assert_called()
+
+    def test_spinner_nao_reaparece_depois_do_turn_done(self):
+        renderer, _ = self._renderer()
+        renderer.turn_done = True
+
+        renderer.show_status()
+
+        assert not renderer.spinner_shown
 
     def test_summary_part_added_nao_cria_checkpoint_anonimo(self):
         renderer, render = self._renderer()

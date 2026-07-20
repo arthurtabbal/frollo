@@ -38,6 +38,7 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku")
 from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
+from lib.runner.capabilities import backend_names, backend_profile, supports
 from lib.runner.codex import run_codex_turn
 from lib import config as _config
 from lib.configure import run_configure
@@ -61,6 +62,7 @@ class ClaudeClient:
         self.session_id = None            # preenchido após o primeiro turno via evento result
         self.first_turn = True
         self.backend = backend
+        self.backend_profile = backend_profile(backend)
         self.mode = Mode.NORMAL
         self.model = model                # None = default do claude CLI; senão alias/id passado pra --model
         self.observed_model = ""          # preenchido via stream events (message_start.model)
@@ -77,6 +79,16 @@ class ClaudeClient:
 
         self._mode_ref = [self.mode]
         self._input_reader = InputReader(self._mode_ref, prompt_provider=self._prompt)
+
+    def _backend_profile(self):
+        profile = getattr(self, "backend_profile", None)
+        if profile is None:
+            profile = backend_profile(getattr(self, "backend", "claude"))
+            self.backend_profile = profile
+        return profile
+
+    def _supports(self, capability):
+        return supports(self._backend_profile(), capability)
 
     def _sync_mode(self):
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
@@ -95,10 +107,12 @@ class ClaudeClient:
                 return
         if not pane:
             return
-        model = _short_model(self.model or self.observed_model) or "?"
+        model = _short_model(self.observed_model if not self._supports("model_selection") else (self.model or self.observed_model)) or "?"
+        label = self._backend_profile()["label"]
+        title = f"▲ chat · {label} · {model}" if label != "claude" else f"▲ chat · {model}"
         try:
             subprocess.run(
-                ["tmux", "-L", self.tmux_srv, "select-pane", "-t", pane, "-T", f"▲ chat · {model}"],
+                ["tmux", "-L", self.tmux_srv, "select-pane", "-t", pane, "-T", title],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError):
@@ -112,9 +126,11 @@ class ClaudeClient:
             badge = f"{TOOLS_BASH}auto{RESET}"
         else:
             badge = f"{DIM}normal{RESET}"
-        backend = getattr(self, "backend", "claude")
-        provider_badge = f"{PURPLE}codex{RESET} " if backend == "codex" else ""
-        model_display = _short_model(self.observed_model if backend == "codex" else (self.model or self.observed_model))
+        profile = self._backend_profile()
+        provider_badge = f"{PURPLE}{profile['label']}{RESET} " if profile["label"] != "claude" else ""
+        model_display = _short_model(
+            self.observed_model if not self._supports("model_selection") else (self.model or self.observed_model)
+        )
         if model_display:
             model_badge = f"{PURPLE}{model_display}{RESET} "
         else:
@@ -143,7 +159,7 @@ class ClaudeClient:
             f"{HEADER_DARK}---''\"'-'\"\"\"'-'\"''---{R}",
         ]
         quote = random.choice(_QUOTES)
-        title = "Codex Frollo Observer" if getattr(self, "backend", "claude") == "codex" else "Claude Frollo Observer"
+        title = self._backend_profile()["title"]
         labels = [
             f"  {HEADER_TITLE}{title}{R}",
             f"  {DIM}Notre-Dame de Paris · 1482{R}",
@@ -211,6 +227,8 @@ class ClaudeClient:
 
     def _startup_stats(self):
         """No startup de um resume, restaura stats do último turno e atualiza cota async."""
+        if not self._supports("session_resume"):
+            return
         import threading
         import json as _json
         from lib.runner.stats import (
@@ -280,7 +298,7 @@ class ClaudeClient:
         threading.Thread(target=_bg, daemon=True).start()
 
     def _run_turn(self, message, images=None):
-        if getattr(self, "backend", "claude") == "codex":
+        if self._backend_profile()["label"] == "codex":
             return run_codex_turn(self, message, images=images)
         return run_turn(self, message, images=images)
 
@@ -324,9 +342,12 @@ class ClaudeClient:
                         self._run_turn(content)
                     continue
                 if user_input.strip().startswith("/model"):
-                    if getattr(self, "backend", "claude") == "codex":
-                        current = self.observed_model or "default do codex"
-                        sys.stdout.write(f"\n{DIM}backend codex experimental usa: {RESET}{current}\n")
+                    if not self._supports("model_selection"):
+                        current = self.observed_model or f"default do {self._backend_profile()['label']}"
+                        sys.stdout.write(
+                            f"\n{DIM}backend {self._backend_profile()['label']} não suporta troca de modelo pelo Frollo: "
+                            f"{RESET}{current}\n"
+                        )
                         sys.stdout.flush()
                         continue
                     parts = user_input.strip().split(maxsplit=1)
@@ -354,6 +375,12 @@ class ClaudeClient:
                         argv = argv[:i] + argv[i+2:]
                     os.execvp(argv[0], argv)
                 if user_input.strip() == "/refresh":
+                    if not self._supports("session_resume"):
+                        sys.stdout.write(
+                            f"{YELLOW}backend {self._backend_profile()['label']} ainda não suporta /refresh ou --resume{RESET}\n\n"
+                        )
+                        sys.stdout.flush()
+                        continue
                     if not self.session_id:
                         sys.stdout.write(f"{YELLOW}sem sessão ativa ainda{RESET}\n\n")
                         sys.stdout.flush()
@@ -361,8 +388,6 @@ class ClaudeClient:
                     sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
                     sys.stdout.flush()
                     _terminate_proc(self.proc)
-                    if getattr(self, "backend", "claude") == "codex":
-                        os.execvp(sys.argv[0], sys.argv[:])
                     os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
                 sys.stdout.write('\n')
                 sys.stdout.flush()
@@ -412,7 +437,7 @@ if __name__ == "__main__":
                        help="reconfigura preferências (typewriter, gárgulas, stats)")
         p.add_argument("--model", metavar="NAME",
                        help="modelo do claude: alias (opus|sonnet|haiku) ou ID completo")
-        p.add_argument("--backend", choices=("claude", "codex"), default="claude",
+        p.add_argument("--backend", choices=backend_names(), default="claude",
                        help="backend experimental: claude (default) ou codex")
         mg = p.add_mutually_exclusive_group()
         for alias in MODEL_ALIASES:
@@ -422,11 +447,14 @@ if __name__ == "__main__":
 
         if args.model and args.model_alias:
             p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
-        if args.backend == "codex":
+        profile = backend_profile(args.backend)
+        if not supports(profile, "model_selection"):
             if args.model or args.model_alias:
-                p.error("--backend codex ainda não suporta seleção de modelo")
+                p.error(f"--backend {args.backend} ainda não suporta seleção de modelo")
+        if not supports(profile, "session_resume"):
             if args.resume is not None:
-                p.error("--backend codex ainda não suporta --resume")
+                p.error(f"--backend {args.backend} ainda não suporta --resume")
+        if not supports(profile, "model_selection"):
             model = None
         else:
             model = args.model or args.model_alias or "sonnet"

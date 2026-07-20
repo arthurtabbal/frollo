@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from chat import ClaudeClient
+from lib.runner.capabilities import backend_profile, supports
 from lib.theme import DIM, RESET, WHITE
 
 
@@ -77,3 +78,22 @@ class TestPromptBadgeDeModelo:
         c = ClaudeClient()
         c._mode_ref[0] = Mode.AUTO
         assert "auto" in c._prompt()
+
+    def test_prompt_codex_exibe_backend_e_modelo_observado(self):
+        c = ClaudeClient(backend="codex")
+        c.observed_model = "gpt-5-codex"
+        assert "codex" in c._prompt()
+        assert "gpt-5-codex" in c._prompt()
+
+
+class TestBackendCapabilities:
+    def test_claude_suporta_modelo_e_resume(self):
+        profile = backend_profile("claude")
+        assert supports(profile, "model_selection")
+        assert supports(profile, "session_resume")
+
+    def test_codex_declara_limites_atuais(self):
+        profile = backend_profile("codex")
+        assert not supports(profile, "model_selection")
+        assert not supports(profile, "session_resume")
+        assert supports(profile, "reasoning_stream")

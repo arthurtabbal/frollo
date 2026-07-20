@@ -1,5 +1,5 @@
 #!/bin/bash
-# Layout tmux para o claude client
+# Layout tmux para o Frollo client
 #
 #  ┌──── nvim-tree + editor ────────────┬─── thinking ──────────┐
 #  │                                   │     céu · lua          │
@@ -35,11 +35,18 @@ for _arg in "$@"; do
     esac
 done
 
-if [[ "$_BACKEND" == "codex" ]]; then
-    command -v codex >/dev/null 2>&1 || { echo "erro: codex CLI não encontrado — instale/configure o Codex CLI"; exit 1; }
-else
-    command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
-fi
+case "$_BACKEND" in
+    codex)
+        command -v codex >/dev/null 2>&1 || { echo "erro: codex CLI não encontrado — instale/configure o Codex CLI"; exit 1; }
+        ;;
+    claude)
+        command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
+        ;;
+    *)
+        echo "erro: backend desconhecido: $_BACKEND (use claude ou codex)"
+        exit 1
+        ;;
+esac
 
 RUNDIR="/tmp/claude-client-$$"
 mkdir -p "$RUNDIR"

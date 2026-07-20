@@ -22,7 +22,9 @@ Instead of asking the agent to be more autonomous, it asks a simpler question:
 
 Frollo is an observability layer for coding agents.
 
-Today it integrates with **Claude Code**, capturing its structured event stream and presenting it through a terminal interface designed for real-time inspection.
+Today it integrates primarily with **Claude Code**, capturing its structured event stream and presenting it through a terminal interface designed for real-time inspection.
+
+An experimental **Codex App Server** backend is also available. It is the first second-provider adapter and the current proving ground for Frollo's canonical event protocol.
 
 Rather than treating the agent as a black box, Frollo exposes its execution in a way that's easier to understand, debug and trust.
 
@@ -44,12 +46,14 @@ Think of it as somewhere between:
 * **Typewriter pacing** — output is paced so you can follow the agent in real time instead of staring at a spinner and then receiving a wall of text. Any keypress skips ahead.
 * **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
 * **Session picker** — resume any previous session interactively.
+* **Experimental Codex backend** — run the same terminal interface against `codex app-server` with `--backend codex`.
 
 ---
 
 ## Requirements
 
 * [Claude Code](https://claude.ai/code) CLI (`claude`)
+* Codex CLI (`codex`) for the experimental Codex backend
 * `tmux` ≥ 3.1
 * Python 3.10+
 * `jq` 1.6+
@@ -70,6 +74,7 @@ cd frollo
 ```bash
 frollo                        # full layout in the current directory
 frollo /path/to/project       # full layout in a specific project
+frollo --backend codex        # experimental Codex App Server backend
 ./bin/observe.sh              # passive observer only: the raw event stream,
                               # from every Claude Code session on the machine
 ```
@@ -148,11 +153,12 @@ Claude Code (any session)
 
 Active client:
 chat.py
-  → claude --output-format stream-json (subprocess)
+  → Claude adapter or Codex adapter
+    → Frollo events    →  existing panes
     → text deltas      →  chat pane (typewriter)
-    → thinking deltas  →  thinking pane
+    → reasoning        →  thinking pane
     → tool events      →  tools pane + gargoyles
-    → usage / cost     →  stats pane
+    → usage / quota    →  stats pane
 ```
 
 Hooks are async and the log is append-only: the observed system never waits on the observer.
@@ -185,6 +191,7 @@ Planned and exploratory work is tracked in the issues:
 * [OpenTelemetry ingestion](https://github.com/arthurtabbal/frollo/issues/4) — consume GenAI traces as an event source.
 * [Experimental native runtime](https://github.com/arthurtabbal/frollo/issues/5) — validate the protocol by producing events, not just consuming them.
 * [The umbrella vision](https://github.com/arthurtabbal/frollo/issues/6) — agent-agnostic observability.
+* [Codex App Server Adapter](https://github.com/arthurtabbal/frollo/issues/7) — first second-provider backend.
 
 Every item serves the same objective:
 

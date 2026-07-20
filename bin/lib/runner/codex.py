@@ -1,9 +1,9 @@
-"""Experimental Codex App Server backend.
+"""Codex App Server backend.
 
-This is the Phase 0.5 bridge: it speaks Codex App Server JSONL and renders a
-small subset through the existing Frollo panes. The canonical protocol shape is
-represented internally as Frollo v0 events, but this is not yet the final adapter
-architecture.
+The adapter speaks Codex App Server JSONL and normalizes provider events into
+Frollo v0 events before the renderer touches them. It intentionally implements a
+small but real subset of the protocol, leaving unsupported provider features
+unmapped instead of simulating them.
 """
 import base64
 import json
@@ -25,13 +25,14 @@ from ..tools import RUNDIR, TOOLS_LOG, _log, _ts, log_tool_call, log_tool_result
 from .assistant_text import AssistantTextRenderer
 from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
+from .protocol import SCHEMA
 from .render import RenderQueue
 from .stats import _model_ctx_window, _render_ctx_line, _render_quota_line, _render_total_line, _render_turn_line
 from .text import reset_col
 
 
-SCHEMA = "frollo.event.v0"
 _CODEX_REASONING_SUMMARY = "detailed"
+_CODEX_DONE_DRAIN_GRACE = 0.35
 _CODEX_LINUX_SANDBOX_WARNING = (
     "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
@@ -104,6 +105,10 @@ def _codex_turn_start_params(thread_id, message, images=None):
         "summary": _CODEX_REASONING_SUMMARY,
         "input": _codex_input_items(message, images=images),
     }
+
+
+def _codex_done_drain_finished(turn_done, last_event_at, now, grace=_CODEX_DONE_DRAIN_GRACE):
+    return bool(turn_done and (now - last_event_at) >= grace)
 
 
 class _CodexProcess:
@@ -513,6 +518,8 @@ class _CodexRenderer:
         self.assistant_text = AssistantTextRenderer(client, cfg, render)
 
     def show_status(self):
+        if self.turn_done:
+            return
         if self.client._streaming_text:
             return
         elapsed = time.time() - self.start_time
@@ -848,12 +855,16 @@ def run_codex_turn(client, message, images=None):
         proc.send("turn/start", _codex_turn_start_params(thread_id, message, images=images))
 
         saw_idle = False
+        last_event_at = time.monotonic()
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             try:
-                msg = proc.next_event(0.15)
+                msg = proc.next_event(0.05 if adapter.turn_done else 0.15)
             except queue.Empty:
+                if _codex_done_drain_finished(adapter.turn_done, last_event_at, time.monotonic()):
+                    break
                 continue
+            last_event_at = time.monotonic()
             for event in adapter.normalize(msg):
                 decision = renderer.handle(event)
                 if decision is not None and event["kind"] == "approval.requested":
@@ -871,8 +882,6 @@ def run_codex_turn(client, message, images=None):
                     renderer.handle(resolved)
             if msg.get("method") == "thread/status/changed":
                 saw_idle = (msg.get("params") or {}).get("status", {}).get("type") == "idle"
-            if adapter.turn_done:
-                break
 
         if saw_idle and not adapter.turn_done:
             renderer.handle(adapter.event("turn.finished", {

@@ -4,7 +4,7 @@ Documentação do projeto para Claude Code. Todo Claude que trabalhar neste repo
 
 ## O que é este projeto
 
-**Claude Frollo Observer** — uma camada de observabilidade terminal para Claude Code, temada em *Notre-Dame de Paris* de Victor Hugo (1831).
+**Claude Frollo Observer** — uma camada de observabilidade terminal para Claude Code, com backend experimental para Codex App Server, temada em *Notre-Dame de Paris* de Victor Hugo (1831).
 
 O nome tem duplo sentido intencional: **Claude** é tanto o modelo de IA quanto **Claude Frollo**, o arquidiácono que observa Paris do alto de Notre-Dame. O projeto literalmente constrói a janela pela qual o Claude será observado.
 
@@ -43,6 +43,7 @@ O autor tem forte ligação pessoal com a obra: foi fã da adaptação Disney de
 | jq | 1.6 | `--unbuffered` no observer; Ubuntu 20.04+ ship 1.6 |
 | nvim | 0.10 | Opcional — exigido apenas pelo NvChad config |
 | claude | qualquer | Claude Code CLI |
+| codex | qualquer | Opcional — exigido apenas por `--backend codex` |
 
 O `install.sh` verifica Python, tmux e jq automaticamente e aborta com mensagem clara se abaixo do mínimo. A checagem do nvim só ocorre se o usuário optar por instalar o NvChad config.
 
@@ -59,11 +60,12 @@ Claude Code (qualquer sessão)
 **Data flow do cliente ativo:**
 ```
 Usuário digita no chat.py
-  → claude --print --output-format stream-json --verbose (subprocesso)
-    → eventos stream-json roteados para:
-        stdout (chat com typewriter)
-        /tmp/claude-client/tools (tool calls com typewriter nas gárgulas)
-        /tmp/claude-client/thinking (thinking blocks com typewriter)
+  → backend claude ou codex
+    → adapter do provedor
+      → eventos Frollo v0
+        → stdout (chat com typewriter)
+        → /tmp/claude-client/tools (tool calls com typewriter nas gárgulas)
+        → /tmp/claude-client/thinking (thinking/reasoning com typewriter)
 ```
 
 **Decisões de arquitetura:**
@@ -83,6 +85,8 @@ Usuário digita no chat.py
 - O loop principal do client usa `select` com timeout de 150ms — garante animação do spinner mesmo em silêncio entre eventos do subprocesso.
 - **Tools pane é limpo via PTY direto** (`/tmp/claude-client/tools_tty`, salvo pelo `frollo.sh`). Escrever `\033[2J\033[H` no arquivo não é confiável via `tail -f`; escrever no PTY funciona de forma determinística. O arquivo de tools é truncado a cada turno.
 - **Stdlib only — sem dependências pip.** Todo o código Python usa exclusivamente a biblioteca padrão. Esta é uma regra de segurança: pip é o principal vetor de supply chain attacks em Python. Qualquer feature que pareça exigir uma dep externa deve ser implementada com stdlib ou reconsiderada. `requirements.txt` não existe e não deve ser criado.
+- **Capabilities por backend** vivem em `lib/runner/capabilities.py`. A UI deve consultar flags (`model_selection`, `session_resume`, `cost_usage`, `reasoning_stream`, etc.) em vez de testar nomes de provedores sempre que estiver decidindo comportamento de interface.
+- **Schema canônico atual** vive em `lib/runner/protocol.py` como `frollo.event.v0`. O Codex já normaliza eventos para esse schema; o Claude ainda usa a máquina `Turn` diretamente, então a issue do protocolo segue parcial.
 
 ## Hook event schema (campos relevantes)
 
@@ -97,7 +101,7 @@ Stop:        hook_event_name, last_assistant_message, cwd
 ## Testes
 
 ```bash
-python3 -m pytest tests/          # testes unitários Python (174 testes)
+python3 -m pytest tests/          # testes unitários Python
 bash tests/test_install_sh.sh     # testes unitários do install.sh (parsers de versão)
 ```
 
@@ -119,6 +123,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | **Render desacoplado do loop de eventos** | `lib/runner/turn.py`, `lib/runner/render.py` | Fase 3 do plano: `run_turn` foi partido em `Turn` (máquina de estados do turno, `handle_line` por tipo de evento) + `RenderQueue` (fila única que roda o typewriter numa thread própria). O loop de ingestão em `run_turn` só lê `proc.stdout` e despacha pro `Turn`, nunca mais dorme por animação — resolve o backpressure que travava o CLI quando o modelo produzia mais rápido que o typewriter consumia |
 | **Processo `claude` persistente** | `lib/runner/__init__.py` (`_ensure_proc`/`_terminate_proc`), `lib/config.py` (`persistent`) | Atrás da flag `persistent: true` (default `false`): reaproveita o mesmo processo `claude --input-format stream-json` entre turnos em vez de respawnar com `--resume` a cada um — elimina o cold-start + reload do transcript, que crescia com o tamanho da sessão. Troca de `/model`/modo mata e respawna (`_terminate_proc`, com `SIGKILL` de reserva — o processo não sai sozinho ao fechar stdin, achado do spike de protocolo). `/refresh`, `/new` e Ctrl+D também chamam `_terminate_proc` antes do `execvp`/saída, pra não deixar processo órfão |
 | **`--thinking-display summarized` forçado no spawn** | `lib/runner/__init__.py:124` | A Anthropic mudou (jul/2026) o default de `thinking.display` na API para `"omitted"` em modelos novos (Sonnet 5, Opus 4.8/4.7) — antes era `"summarized"`. Isso quebrou o pane de thinking pro Sonnet (só Haiku 4.5 continuou mostrando, por não estar nessa leva). Investigado via engenharia reversa do binário `claude` (2.1.201): em modo `--print` + `--output-format stream-json`, o CLI **não** seta um display explícito por conta própria (`showThinkingSummaries` do settings.json só se aplica em modo interativo) — então herda o default da API, que agora é omitted. Achamos uma flag oculta (`.hideHelp()`, não aparece em `--help`, e segue oculta no `claude` 2.1.215, mas funcional): `--thinking-display <summarized\|omitted>`. Setá-la explicitamente no spawn também marca a sessão como "display explícito" internamente, o que evita o CLI reforçar `omitted` de volta em sessões não-interativas. Adicionada incondicionalmente no `cmd` de `_ensure_proc` — restaura o thinking do Sonnet sem depender do default (instável) da API |
+| **Backend Codex App Server** | `lib/runner/codex.py`, `lib/runner/protocol.py`, `lib/runner/capabilities.py` | `frollo --backend codex` inicia `codex app-server`, cria thread, envia `turn/start` e traduz mensagens, reasoning, comandos, diffs, approvals, uso e cota para eventos `frollo.event.v0`. É experimental, mas real: o processo Codex é persistente durante a sessão do client. Limites atuais ficam declarados por capability: sem `/model`, sem `--resume`/`/refresh`, sem custo por turno. |
 
 ## Módulos (bin/)
 
@@ -128,6 +133,10 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 |---|---|---|
 | `chat.py` | ~430 | TUI principal: loop de input, /snapshot, /paste, /refresh, /model, /new |
 | `lib/runner/__init__.py` | ~375 | `_ensure_proc`/`_terminate_proc` (spawn per-turn ou reaproveite em modo persistente), loop `select` que alimenta `Turn.handle_line`, finalize (stats/cota/restore) — tudo em `try/finally` (garante restore do termios e do pane de thinking mesmo em erro/Ctrl+C) |
+| `lib/runner/codex.py` | ~900 | Backend Codex App Server: processo JSONL, adapter para `frollo.event.v0`, renderer para os panes atuais, stats/quota Codex |
+| `lib/runner/capabilities.py` | ~60 | Perfis de backend e flags que a UI usa para degradar comportamento sem checar nomes de provedores |
+| `lib/runner/protocol.py` | ~10 | Constantes do protocolo canônico (`SCHEMA = "frollo.event.v0"`) |
+| `lib/runner/assistant_text.py` | ~80 | Renderer compartilhado de texto do assistente: Markdown buffer, separação entre response items, finalização de linha |
 | `lib/runner/turn.py` | ~345 | Classe `Turn` — máquina de estados do turno (Fase 2): consome linhas do stream-json e despacha por tipo de evento (`_handle_stream_event`, `_handle_content_block_delta`, `_handle_result` etc.) |
 | `lib/runner/render.py` | ~225 | `RenderQueue` (Fase 3) — fila única que roda o typewriter (chat/thinking/gárgulas) numa thread própria; skip via `threading.Event` compartilhado; spinner via tick periódico mesmo em animação longa |
 | `lib/runner/panes.py` | ~65 | Redimensionamento dinâmico dos panes tmux (idle/summary/full) |
@@ -204,6 +213,8 @@ Preços e tamanhos de janela de contexto por modelo em `runner/stats.py`.
 **Seleção de modelo**: `--opus` / `--sonnet` / `--haiku` (shortcuts) ou `--model <alias|id>` na linha de comando, e `/model <nome>` dentro do chat (tomando efeito no próximo turno — por padrão o subprocess do `claude` é per-turn; em modo persistente, a troca mata e respawna o processo, ver seção "Modo persistente"). Sem flag, o Frollo usa **sonnet** por default — excelente balance entre qualidade e velocidade, com thinking summarizado visível; use Haiku (`/model haiku`) pra tarefas rápidas/baratas, ou Opus (`/model opus`) quando precisa máxima qualidade. O prompt mostra o badge do modelo (escolhido ou observado via `message_start.model`) à esquerda do badge de modo. Além disso, o modelo atual fica **sempre visível no título da borda do pane de chat** (`▲ chat · <modelo>`), atualizado no startup, ao fim de cada turno e a cada `/model` — o cliente seta via `tmux select-pane -T` usando `$TMUX_PANE` (chrome do tmux, não rola com o output).
 
 **Picker de sessões**: `--resume` sem argumento abre picker interativo com histórico de sessões do projeto atual.
+
+**Backend Codex**: `frollo --backend codex` troca o cliente ativo para `codex app-server`. O prompt mostra badge `codex`, o título do pane inclui o backend, reasoning vai para o pane de thinking e comandos/diffs aparecem no pane de tools. Como capabilities atuais declaram `model_selection=false` e `session_resume=false`, `--model`, `/model`, `--resume` e `/refresh` não tentam simular suporte que o adapter ainda não tem.
 
 ## Comandos no chat
 
