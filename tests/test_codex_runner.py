@@ -10,6 +10,11 @@ from lib.runner.codex import (
     _CODEX_DONE_DRAIN_GRACE,
     _CodexAdapter,
     _CodexRenderer,
+    _codex_command_output_preview,
+    _codex_live_progress_line,
+    _codex_live_progress_lines,
+    _codex_normalize_command_output,
+    _codex_preferred_command_output,
     _codex_done_drain_finished,
     _codex_turn_start_params,
 )
@@ -25,6 +30,61 @@ def _adapter():
 
 
 class TestCodexAdapter:
+    def test_normaliza_output_fragmentado_do_pytest(self):
+        text = (
+            "tests/test_alpha.py\n\n.\n\n.\n\n[ 50%]\n\n"
+            "tests/test_beta.py\n\n.\n\n[100%]\n\n"
+            "================ 3 passed in 0.10s ================\n"
+        )
+
+        assert _codex_normalize_command_output(text) == (
+            "tests/test_alpha.py  2 passed [ 50%]\n"
+            "tests/test_beta.py  1 passed [100%]\n"
+            "================ 3 passed in 0.10s ================"
+        )
+
+    def test_normaliza_carriage_return_mantendo_ultima_linha(self):
+        assert _codex_normalize_command_output("baixando 10%\rbaixando 100%\nok\n") == "baixando 100%\nok"
+
+    def test_detecta_linha_de_progresso_ao_vivo(self):
+        assert _codex_live_progress_line("baixando 10%\rbaixando 100%") == "baixando 100%"
+        assert _codex_live_progress_line("frollo-progress [####------]  40%\n") == (
+            "frollo-progress [####------]  40%"
+        )
+        assert _codex_live_progress_line(".\n[ 50%]\n") is None
+
+    def test_detecta_frames_de_progresso_no_mesmo_delta(self):
+        text = (
+            "\rfrollo-progress [----------]   0%"
+            "\rfrollo-progress [#####-----]  50%"
+            "\rfrollo-progress [##########] 100%"
+        )
+
+        assert _codex_live_progress_lines(text) == [
+            "frollo-progress [----------]   0%",
+            "frollo-progress [#####-----]  50%",
+            "frollo-progress [##########] 100%",
+        ]
+        assert _codex_live_progress_line(text) == "frollo-progress [##########] 100%"
+
+    def test_preview_de_output_longo_preserva_fim(self):
+        text = "\n".join(f"linha {i}" for i in range(20))
+
+        assert _codex_command_output_preview(text, limit=6) == (
+            "linha 0\n"
+            "linha 1\n"
+            "linha 2\n"
+            "↓ 15 linhas\n"
+            "linha 18\n"
+            "linha 19"
+        )
+
+    def test_output_final_preserva_buffer_quando_agregado_perde_prefixo(self):
+        buffered = "frollo-progress 10%\nfrollo-progress 25%\nfrollo-progress 50%\n"
+        output = "frollo-progress 25%\nfrollo-progress 50%\n"
+
+        assert _codex_preferred_command_output(output, buffered) == buffered
+
     def test_turn_start_params_forcam_summary_detailed(self):
         params = _codex_turn_start_params("thread-1", "oi")
 
@@ -253,6 +313,177 @@ class TestCodexRenderer:
             })
 
         mock_log.assert_not_called()
+
+    def test_command_output_delta_e_renderizado_uma_vez_no_fim(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_call"), patch("lib.runner.codex.log_tool_result") as mock_result:
+            renderer.handle({
+                "kind": "command.started",
+                "item_id": "cmd-1",
+                "payload": {"command": {"command": "pytest"}},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "tests/test_alpha.py\n\n.\n\n"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "[100%]\n"},
+                "provider": {},
+            })
+
+            mock_result.assert_not_called()
+
+            renderer.handle({
+                "kind": "command.finished",
+                "item_id": "cmd-1",
+                "payload": {"command": {"output": None}},
+                "provider": {},
+            })
+
+        mock_result.assert_called_once_with({"content": "tests/test_alpha.py  1 passed [100%]"})
+
+    def test_command_output_delta_de_progresso_atualiza_linha_viva(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result") as mock_result, \
+                patch("lib.runner.codex._log") as mock_log:
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "frollo-progress [####------]  40%\n"},
+                "provider": {},
+            })
+
+            mock_result.assert_not_called()
+            assert mock_log.call_count == 1
+            assert "frollo-progress [####------]  40%" in mock_log.call_args.args[1]
+
+            renderer.handle({
+                "kind": "command.finished",
+                "item_id": "cmd-1",
+                "payload": {"command": {"output": None}},
+                "provider": {},
+            })
+
+        assert mock_log.call_count == 2
+        assert mock_log.call_args_list[1].args[1] == "\r\033[2K"
+        mock_result.assert_not_called()
+
+    def test_command_finished_com_progresso_nao_registra_residuo_final(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result") as mock_result, \
+                patch("lib.runner.codex._log"):
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "frollo-progress [####------]  40%\n"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.finished",
+                "item_id": "cmd-1",
+                "payload": {"command": {"output": "frollo-progress [##########] 100%\nfeito\n"}},
+                "provider": {},
+            })
+
+        mock_result.assert_not_called()
+
+    def test_command_output_delta_reproduz_frames_de_progresso_agrupados(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result") as mock_result, \
+                patch("lib.runner.codex.time.sleep") as mock_sleep, \
+                patch("lib.runner.codex._log") as mock_log:
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {
+                    "delta": (
+                        "\rfrollo-progress [----------]   0%"
+                        "\rfrollo-progress [#####-----]  50%"
+                        "\rfrollo-progress [##########] 100%"
+                    )
+                },
+                "provider": {},
+            })
+
+            mock_result.assert_not_called()
+            assert mock_log.call_count == 3
+            assert "frollo-progress [----------]   0%" in mock_log.call_args_list[0].args[1]
+            assert "frollo-progress [#####-----]  50%" in mock_log.call_args_list[1].args[1]
+            assert "frollo-progress [##########] 100%" in mock_log.call_args_list[2].args[1]
+            assert mock_sleep.call_count == 2
+
+    def test_command_output_delta_ignora_frame_repetido_entre_deltas(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result"), \
+                patch("lib.runner.codex._log") as mock_log:
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "\rfrollo-progress [#####-----]  50%"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "\rfrollo-progress [#####-----]  50%"},
+                "provider": {},
+            })
+
+        assert mock_log.call_count == 1
+
+    def test_command_finished_prefere_aggregated_output_sem_duplicar_delta(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result") as mock_result:
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "parcial\n"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.finished",
+                "item_id": "cmd-1",
+                "payload": {"command": {"output": "final\n"}},
+                "provider": {},
+            })
+
+        mock_result.assert_called_once_with({"content": "final"})
+
+    def test_command_finished_preserva_buffer_quando_aggregated_output_eh_sufixo(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_result") as mock_result:
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "frollo-progress 10%\n"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.output.delta",
+                "item_id": "cmd-1",
+                "payload": {"delta": "frollo-progress 25%\n"},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "command.finished",
+                "item_id": "cmd-1",
+                "payload": {"command": {"output": "frollo-progress 25%\n"}},
+                "provider": {},
+            })
+
+        mock_result.assert_called_once_with({"content": "frollo-progress 10%\nfrollo-progress 25%"})
 
     def test_reasoning_vazio_escreve_fallback_no_thinking(self):
         renderer, render = self._renderer()

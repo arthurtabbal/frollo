@@ -49,6 +49,186 @@ def _parse_codex_version(user_agent):
     return match.group(1) if match else None
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PYTEST_MARKS_RE = re.compile(r"^[.EFsfxX]+$")
+_PERCENT_PROGRESS_RE = re.compile(r"^\[\s*\d+%\]$")
+_PROGRESS_BAR_RE = re.compile(r"\[[#=\- >.]+\]\s*\d{1,3}%")
+_PROGRESS_DONE_RE = re.compile(r"^(?:feito|done|complete|completed|finished)$", re.IGNORECASE)
+_LIVE_PROGRESS_MAX_FRAMES = 24
+_LIVE_PROGRESS_REPLAY_DELAY = 0.04
+
+
+def _clean_terminal_line(line):
+    line = _ANSI_RE.sub("", line).strip()
+    return _CONTROL_RE.sub("", line)
+
+
+def _terminal_logical_lines(text):
+    lines = [""]
+    normalized = (text or "").replace("\r\n", "\n").replace("\n\r", "\n")
+    for ch in normalized:
+        if ch == "\r":
+            lines[-1] = ""
+        elif ch == "\n":
+            lines.append("")
+        elif ch == "\b":
+            lines[-1] = lines[-1][:-1]
+        else:
+            lines[-1] += ch
+    return lines
+
+
+def _terminal_snapshot_lines(text):
+    lines = []
+    current = ""
+    normalized = (text or "").replace("\r\n", "\n").replace("\n\r", "\n")
+
+    def push_current():
+        line = _clean_terminal_line(current)
+        if line:
+            lines.append(line)
+
+    for ch in normalized:
+        if ch in ("\r", "\n"):
+            push_current()
+            current = ""
+        elif ch == "\b":
+            current = current[:-1]
+        else:
+            current += ch
+
+    push_current()
+    return lines
+
+
+def _pytest_progress_summary(marks, percent):
+    if not marks:
+        return percent
+    if set(marks) == {"."}:
+        return f"{len(marks)} passed {percent}"
+    if len(marks) > 40:
+        marks = "…" + marks[-39:]
+    return f"{marks} {percent}"
+
+
+def _codex_normalize_command_output(text):
+    """Reduce terminal progress noise before writing command output to tools."""
+    lines = []
+    pytest_marks = ""
+
+    for raw in _terminal_logical_lines(text):
+        line = _clean_terminal_line(raw)
+        if not line:
+            continue
+
+        if _PYTEST_MARKS_RE.fullmatch(line):
+            pytest_marks += line
+            continue
+
+        if _PERCENT_PROGRESS_RE.fullmatch(line):
+            if pytest_marks:
+                summary = _pytest_progress_summary(pytest_marks, line)
+                if lines and lines[-1].endswith(".py"):
+                    lines[-1] = f"{lines[-1]}  {summary}"
+                else:
+                    lines.append(summary)
+                pytest_marks = ""
+            continue
+
+        if pytest_marks:
+            lines.append(_pytest_progress_summary(pytest_marks, ""))
+            pytest_marks = ""
+        lines.append(line)
+
+    if pytest_marks:
+        lines.append(_pytest_progress_summary(pytest_marks, ""))
+
+    return "\n".join(lines)
+
+
+def _codex_command_output_preview(text, limit=12):
+    normalized = _codex_normalize_command_output(text)
+    lines = normalized.split("\n") if normalized else []
+    if len(lines) <= limit:
+        return normalized
+
+    head_count = max(1, limit // 2)
+    tail_count = max(1, limit - head_count - 1)
+    omitted = len(lines) - head_count - tail_count
+    return "\n".join(lines[:head_count] + [f"↓ {omitted} linhas"] + lines[-tail_count:])
+
+
+def _codex_preferred_command_output(output, buffered_output):
+    if output is None or output == "":
+        return buffered_output
+    if not buffered_output:
+        return output
+
+    normalized_output = _codex_normalize_command_output(output)
+    normalized_buffer = _codex_normalize_command_output(buffered_output)
+    if normalized_output and normalized_buffer and normalized_buffer != normalized_output:
+        if normalized_buffer.endswith(normalized_output):
+            return buffered_output
+
+    return output
+
+
+def _codex_without_live_progress_output(text):
+    lines = []
+    for line in _codex_normalize_command_output(text).split("\n"):
+        if not line:
+            continue
+        if _PROGRESS_BAR_RE.search(line):
+            continue
+        if _PROGRESS_DONE_RE.fullmatch(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _codex_sample_progress_lines(lines, limit=_LIVE_PROGRESS_MAX_FRAMES):
+    if len(lines) <= limit:
+        return lines
+
+    sampled = []
+    last_index = len(lines) - 1
+    for pos in range(limit):
+        index = round(pos * last_index / (limit - 1))
+        if not sampled or sampled[-1] != lines[index]:
+            sampled.append(lines[index])
+    return sampled
+
+
+def _codex_live_progress_lines(text):
+    is_rewrite = "\r" in (text or "")
+    lines = []
+    for line in _terminal_snapshot_lines(text):
+        if _PERCENT_PROGRESS_RE.fullmatch(line) or _PYTEST_MARKS_RE.fullmatch(line):
+            continue
+        if is_rewrite or _PROGRESS_BAR_RE.search(line):
+            if not lines or lines[-1] != line:
+                lines.append(line)
+    return _codex_sample_progress_lines(lines)
+
+
+def _codex_live_progress_line(text):
+    lines = _codex_live_progress_lines(text)
+    return lines[-1] if lines else None
+
+
+def _codex_log_live_progress(line):
+    if not line:
+        return
+    if len(line) > 68:
+        line = line[:67] + "…"
+    _log(TOOLS_LOG, f"\r\033[2K  {DIM}{line}{RESET}")
+
+
+def _codex_clear_live_progress():
+    _log(TOOLS_LOG, "\r\033[2K")
+
+
 def _text_from_parts(parts):
     return "\n".join(_text_part_texts(parts))
 
@@ -515,6 +695,9 @@ class _CodexRenderer:
         self.reasoning_open_entry_items = set()
         self.reasoning_finished_items = set()
         self.reasoning_items_with_text = set()
+        self.command_output_buffers = {}
+        self.command_live_progress = set()
+        self.command_live_progress_last = {}
         self.assistant_text = AssistantTextRenderer(client, cfg, render)
 
     def show_status(self):
@@ -646,16 +829,43 @@ class _CodexRenderer:
             self.assistant_text.finish(add_newline_if_mid_line=True)
         elif kind == "command.started":
             command = (payload.get("command") or {}).get("command") or "command"
+            self.command_output_buffers[event.get("item_id") or "__current__"] = ""
+            self.command_live_progress.discard(event.get("item_id") or "__current__")
+            self.command_live_progress_last.pop(event.get("item_id") or "__current__", None)
             log_tool_call({"name": "Bash", "input": {"command": command, "description": command}},
                           self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, self.render)
         elif kind == "command.output.delta":
-            log_tool_result({"content": payload.get("delta", "")})
+            key = event.get("item_id") or "__current__"
+            delta = payload.get("delta", "") or ""
+            self.command_output_buffers[key] = self.command_output_buffers.get(key, "") + delta
+            progress_lines = [
+                line for line in _codex_live_progress_lines(delta)
+                if line != self.command_live_progress_last.get(key)
+            ]
+            if progress_lines:
+                self.command_live_progress.add(key)
+            for index, progress_line in enumerate(progress_lines):
+                _codex_log_live_progress(progress_line)
+                self.command_live_progress_last[key] = progress_line
+                if index < len(progress_lines) - 1:
+                    time.sleep(_LIVE_PROGRESS_REPLAY_DELAY)
         elif kind in ("command.finished", "command.failed"):
+            key = event.get("item_id") or "__current__"
             command = payload.get("command") or {}
             output = command.get("output")
-            if output:
-                log_tool_result({"content": output})
-            if kind == "command.failed" and not output:
+            buffered_output = self.command_output_buffers.pop(key, "")
+            self.command_live_progress_last.pop(key, None)
+            had_live_progress = key in self.command_live_progress
+            if had_live_progress:
+                _codex_clear_live_progress()
+                self.command_live_progress.discard(key)
+            final_output = _codex_preferred_command_output(output, buffered_output)
+            if had_live_progress:
+                final_output = _codex_without_live_progress_output(final_output)
+            text = _codex_command_output_preview(final_output)
+            if text:
+                log_tool_result({"content": text})
+            if kind == "command.failed" and not text:
                 _log(TOOLS_LOG, f"  {YELLOW}{payload.get('status', 'failed')}{RESET}\n\n")
         elif kind == "file.change.finished":
             file_payload = payload.get("file") or {}
