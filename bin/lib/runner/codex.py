@@ -20,8 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import config
-from ..theme import CHAT_FG, CLEAR, DIM, RESET, THINKING_FG, THINKING_TS, YELLOW
+from ..theme import CLEAR, DIM, RESET, THINKING_FG, THINKING_TS, YELLOW
 from ..tools import RUNDIR, TOOLS_LOG, _log, _ts, log_tool_call, log_tool_result
+from .assistant_text import AssistantTextRenderer
 from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
 from .render import RenderQueue
@@ -509,9 +510,7 @@ class _CodexRenderer:
         self.reasoning_open_entry_items = set()
         self.reasoning_finished_items = set()
         self.reasoning_items_with_text = set()
-        self.assistant_item_id = None
-        self.assistant_text_started = False
-        self.assistant_last_char = ""
+        self.assistant_text = AssistantTextRenderer(client, cfg, render)
 
     def show_status(self):
         if self.client._streaming_text:
@@ -623,27 +622,6 @@ class _CodexRenderer:
             self.reasoning_open_items.clear()
             self.reasoning_open = False
 
-    def _push_assistant_delta(self, text, item_id=None):
-        if not text:
-            return
-        if (
-            self.assistant_text_started
-            and item_id
-            and self.assistant_item_id
-            and item_id != self.assistant_item_id
-            and self.assistant_last_char != "\n"
-        ):
-            self.client._last_response_text += "\n\n"
-            self.render.push_stdout(CHAT_FG + "\n\n" + RESET, delay=0)
-        self.assistant_item_id = item_id or self.assistant_item_id
-        self.assistant_text_started = True
-        self.assistant_last_char = text[-1]
-        self.client._last_response_text += text
-        self.render.push_stdout(
-            CHAT_FG + text + RESET,
-            delay=0.015 if self.cfg.get("typewriter", True) else 0,
-        )
-
     def handle(self, event):
         kind = event["kind"]
         payload = event.get("payload") or {}
@@ -655,9 +633,10 @@ class _CodexRenderer:
         if kind == "message.assistant.delta":
             if self.reasoning_open:
                 self._finish_reasoning({})
-            self.client._streaming_text = True
             self.text_started = True
-            self._push_assistant_delta(payload.get("delta", ""), event.get("item_id"))
+            self.assistant_text.push_delta(payload.get("delta", ""), event.get("item_id"))
+        elif kind == "message.assistant.completed":
+            self.assistant_text.finish(add_newline_if_mid_line=True)
         elif kind == "command.started":
             command = (payload.get("command") or {}).get("command") or "command"
             log_tool_call({"name": "Bash", "input": {"command": command, "description": command}},
@@ -713,6 +692,7 @@ class _CodexRenderer:
             finally:
                 self.render.resume()
         elif kind in ("turn.finished", "turn.failed", "turn.interrupted"):
+            self.assistant_text.finish(add_newline_if_mid_line=True)
             self.turn_done = True
             self.turn_status = payload.get("status")
             self.turn_duration_ms = payload.get("duration_ms")
@@ -834,6 +814,7 @@ def run_codex_turn(client, message, images=None):
     try:
         render = RenderQueue()
         renderer.render = render
+        renderer.assistant_text.render = render
         render.start(
             status_cb=renderer.show_status,
             clear_status_cb=renderer.clear_status,

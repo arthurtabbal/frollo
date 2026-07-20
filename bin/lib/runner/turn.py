@@ -13,14 +13,14 @@ from datetime import datetime
 
 from ..theme import (
     DIM, RESET, YELLOW,
-    _F, _GLOW, MdBuffer,
-    CHAT_FG, THINKING_FG, THINKING_TS,
+    _F, _GLOW,
+    THINKING_FG, THINKING_TS,
     CLEAR,
 )
 from ..tools import log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
 from ..gargulas import _gargula_comment
 
-from .text import col_is_mid_line
+from .assistant_text import AssistantTextRenderer
 from .panes import THINKING_LOG, _resize_thinking
 from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request, _write_stdin
 from .stats import _fmt_tok
@@ -46,9 +46,8 @@ class Turn:
         self.cache_creation_tokens = 0
         self.current_block = None
         self.text_started = False
-        self.text_block_count = 0
         self.fire_frame = 0
-        self.md_buf = MdBuffer()
+        self.assistant_text = AssistantTextRenderer(client, cfg, render)
         self.thinking_lines = idle_lines
         self.thinking_count = 0
         self.thinking_col = 0
@@ -200,11 +199,8 @@ class Turn:
                 # Seta o flag antes de enfileirar — o render thread só desenha o
                 # spinner quando isso é False, então essa ordem evita que ele
                 # tente desenhar bem no instante em que o texto começa a sair.
-                self.client._streaming_text = True
                 self.text_started = True
-                prefix = ("\n" if self.text_block_count > 0 else "") + CHAT_FG
-                self.text_block_count += 1
-                self.render.push_stdout(prefix, delay=0)
+                self.assistant_text.start_block()
 
         elif et == "content_block_delta":
             self._handle_content_block_delta(e.get("delta", {}))
@@ -246,14 +242,7 @@ class Turn:
 
         elif dtype == "text_delta":
             chunk = delta.get("text", "")
-            self.client._last_response_text += chunk
-            if self._suppress_perm_text:
-                pass
-            else:
-                rendered = self.md_buf.feed(chunk)
-                if rendered:
-                    delay = 0.015 if self.cfg.get("typewriter", True) else 0
-                    self.render.push_stdout(CHAT_FG + rendered + RESET, delay=delay)
+            self.assistant_text.push_delta(chunk, suppress=self._suppress_perm_text)
 
     def _handle_content_block_stop(self):
         if self.current_block == "thinking":
@@ -265,17 +254,7 @@ class Turn:
             else:
                 self._empty_thinking_blocks += 1
         elif self.current_block == "text":
-            remainder = self.md_buf.flush()
-            text = CHAT_FG + remainder + RESET if remainder else RESET
-            delay = 0.015 if (remainder and self.cfg.get("typewriter", True)) else 0
-            self.render.push_stdout(text, delay=delay)
-            # Flush antes de ler col_is_mid_line() — senão a coluna refletiria
-            # o estado de antes desse texto ainda ser escrito de fato.
-            self.render.join()
-            self.client._streaming_text = False
-            if col_is_mid_line():
-                self.render.push_stdout("\n", delay=0)
-                self.render.join()
+            self.assistant_text.finish(add_newline_if_mid_line=True)
         self.current_block = None
 
     # -- assistant / user -------------------------------------------------

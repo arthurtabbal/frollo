@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 import lib.runner.codex as codex_mod
 from lib.runner.codex import _CodexAdapter, _CodexRenderer, _codex_turn_start_params
+from lib.theme import CHAT_FG, RESET
 
 
 def _adapter():
@@ -335,9 +336,9 @@ class TestCodexRenderer:
 
         pushed = [call.args[0] for call in render.push_stdout.call_args_list]
         assert pushed == [
-            codex_mod.CHAT_FG + "primeiro bloco." + codex_mod.RESET,
-            codex_mod.CHAT_FG + "\n\n" + codex_mod.RESET,
-            codex_mod.CHAT_FG + "segundo bloco." + codex_mod.RESET,
+            CHAT_FG + "primeiro bloco." + RESET,
+            CHAT_FG + "\n\n" + RESET,
+            CHAT_FG + "segundo bloco." + RESET,
         ]
         assert renderer.client._last_response_text == "primeiro bloco.\n\nsegundo bloco."
 
@@ -359,7 +360,29 @@ class TestCodexRenderer:
 
         pushed = [call.args[0] for call in render.push_stdout.call_args_list]
         assert pushed == [
-            codex_mod.CHAT_FG + "pri" + codex_mod.RESET,
-            codex_mod.CHAT_FG + "meiro" + codex_mod.RESET,
+            CHAT_FG + "pri" + RESET,
+            CHAT_FG + "meiro" + RESET,
         ]
         assert renderer.client._last_response_text == "primeiro"
+
+    def test_assistant_delta_usa_markdown_buffer_compartilhado(self):
+        renderer, render = self._renderer()
+
+        renderer.handle({
+            "kind": "message.assistant.delta",
+            "item_id": "msg-1",
+            "payload": {"delta": "isso é **for"},
+            "provider": {},
+        })
+        assert render.push_stdout.call_count == 0
+
+        renderer.handle({
+            "kind": "message.assistant.delta",
+            "item_id": "msg-1",
+            "payload": {"delta": "te**."},
+            "provider": {},
+        })
+
+        pushed = "".join(call.args[0] for call in render.push_stdout.call_args_list)
+        assert "\033[1mforte" in pushed
+        assert renderer.client._last_response_text == "isso é **forte**."
