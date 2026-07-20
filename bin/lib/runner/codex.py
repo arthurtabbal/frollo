@@ -5,6 +5,7 @@ small subset through the existing Frollo panes. The canonical protocol shape is
 represented internally as Frollo v0 events, but this is not yet the final adapter
 architecture.
 """
+import base64
 import json
 import os
 import queue
@@ -16,9 +17,10 @@ import termios
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .. import config
-from ..theme import CHAT_FG, DIM, RESET, YELLOW
+from ..theme import CHAT_FG, CLEAR, DIM, RESET, THINKING_FG, THINKING_TS, YELLOW
 from ..tools import RUNDIR, TOOLS_LOG, _log, _ts, log_tool_call, log_tool_result
 from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
@@ -28,6 +30,10 @@ from .text import reset_col
 
 
 SCHEMA = "frollo.event.v0"
+_CODEX_REASONING_SUMMARY = "detailed"
+_CODEX_LINUX_SANDBOX_WARNING = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
+)
 
 
 def _utc_now():
@@ -39,6 +45,64 @@ def _parse_codex_version(user_agent):
         return None
     match = re.search(r"/([0-9]+(?:\.[0-9]+)+)", user_agent)
     return match.group(1) if match else None
+
+
+def _text_from_parts(parts):
+    return "\n".join(_text_part_texts(parts))
+
+
+def _text_part_texts(parts):
+    if not parts:
+        return []
+    if isinstance(parts, str):
+        return [parts]
+    out = []
+    for part in parts:
+        if isinstance(part, str):
+            text = part
+        elif isinstance(part, dict):
+            text = part.get("text") or ""
+        else:
+            text = ""
+        if text:
+            out.append(text)
+    return out
+
+
+def _codex_image_suffix(media_type):
+    if media_type == "image/jpeg":
+        return ".jpg"
+    return ".png"
+
+
+def _codex_input_items(message, images=None):
+    items = []
+    if images:
+        RUNDIR.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time() * 1000)
+        for idx, image in enumerate(images):
+            path = image.get("path")
+            if not path and image.get("data"):
+                suffix = _codex_image_suffix(image.get("media_type"))
+                path = RUNDIR / f"codex-image-{stamp}-{idx}{suffix}"
+                path.write_bytes(base64.b64decode(image["data"]))
+            if path:
+                items.append({"type": "localImage", "path": str(Path(path).resolve())})
+
+    text = message.replace("[img]", "").strip() if images else message
+    if text or not items:
+        items.append({"type": "text", "text": text})
+    return items
+
+
+def _codex_turn_start_params(thread_id, message, images=None):
+    return {
+        "threadId": thread_id,
+        "approvalPolicy": "never",
+        "sandboxPolicy": {"type": "dangerFullAccess"},
+        "summary": _CODEX_REASONING_SUMMARY,
+        "input": _codex_input_items(message, images=images),
+    }
 
 
 class _CodexProcess:
@@ -55,7 +119,8 @@ class _CodexProcess:
     def start(self):
         for path in (self.stderr_log, self.raw_log, self.client_log):
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("")
+            if not path.exists():
+                path.write_text("")
         self.proc = subprocess.Popen(
             ["codex", "app-server"],
             stdin=subprocess.PIPE,
@@ -136,6 +201,9 @@ class _CodexProcess:
             return self.backlog.pop(0)
         return self.events.get(timeout=timeout)
 
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
 
 class _CodexAdapter:
     def __init__(self, client):
@@ -192,8 +260,10 @@ class _CodexAdapter:
         params = msg.get("params") or {}
 
         if method == "configWarning":
+            summary = params.get("summary") or "Codex config warning"
+            code = "codex_linux_sandbox_userns" if summary == _CODEX_LINUX_SANDBOX_WARNING else None
             out.append(self.event("notice", {
-                "notice": {"level": "warning", "message": params.get("summary") or "Codex config warning"}
+                "notice": {"level": "warning", "message": summary, "code": code}
             }, raw=msg))
         elif method == "thread/started":
             thread = params.get("thread") or {}
@@ -235,6 +305,24 @@ class _CodexAdapter:
             out.append(self.event("message.assistant.delta", {
                 "role": "assistant",
                 "delta": params.get("delta", ""),
+            }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
+        elif method == "item/reasoning/textDelta":
+            out.append(self.event("reasoning.delta", {
+                "delta": params.get("delta", ""),
+                "visibility": "text",
+                "content_index": params.get("contentIndex"),
+            }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
+        elif method == "item/reasoning/summaryTextDelta":
+            out.append(self.event("reasoning.delta", {
+                "delta": params.get("delta", ""),
+                "visibility": "summary",
+                "summary_index": params.get("summaryIndex"),
+            }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
+        elif method == "item/reasoning/summaryPartAdded":
+            out.append(self.event("reasoning.summary.started", {
+                "status": "in_progress",
+                "summary_index": params.get("summaryIndex"),
+                "visibility": "summary",
             }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
         elif method == "item/commandExecution/outputDelta":
             out.append(self.event("command.output.delta", {
@@ -318,6 +406,17 @@ class _CodexAdapter:
                     "source": item.get("source"),
                 }
             }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
+        if typ == "reasoning":
+            summary_parts = _text_part_texts(item.get("summary"))
+            content_parts = _text_part_texts(item.get("content"))
+            return [self.event("reasoning.started", {
+                "status": item.get("status") or "in_progress",
+                "visibility": "summary" if summary_parts else ("text" if content_parts else "unknown"),
+                "summary_text": "\n".join(summary_parts),
+                "content_text": "\n".join(content_parts),
+                "summary_parts": summary_parts,
+                "content_parts": content_parts,
+            }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         if typ == "fileChange":
             changes = item.get("changes") or []
             first = changes[0] if changes else {}
@@ -339,9 +438,18 @@ class _CodexAdapter:
                 "phase": item.get("phase"),
             }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         if typ == "reasoning":
+            summary_parts = _text_part_texts(item.get("summary"))
+            content_parts = _text_part_texts(item.get("content"))
+            summary_text = "\n".join(summary_parts)
+            content_text = "\n".join(content_parts)
+            visibility = "summary" if summary_parts else ("text" if content_parts else "unknown")
             return [self.event("reasoning.completed", {
                 "status": "completed",
-                "visibility": "summary" if item.get("summary") else "unknown",
+                "visibility": visibility,
+                "summary_text": summary_text,
+                "content_text": content_text,
+                "summary_parts": summary_parts,
+                "content_parts": content_parts,
             }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         if typ == "commandExecution":
             status = item.get("status")
@@ -385,11 +493,22 @@ class _CodexRenderer:
         self.output_tokens = 0
         self.cache_read_tokens = 0
         self.context_window = 258400
+        self.reasoning_output_tokens = 0
         self.model_name = ""
         self.quota = None
         self.turn_done = False
         self.turn_status = None
         self.turn_duration_ms = None
+        self.thinking_autoresize = cfg.get("thinking_autoresize", True)
+        rows = _window_height(client.tmux_srv)
+        self._idle_lines = max(8, int(rows * 0.16))
+        self._max_think_lines = max(12, rows - int(rows * 0.26) - max(2, int(rows * 0.08)) - 6)
+        self.reasoning_header_written = False
+        self.reasoning_open = False
+        self.reasoning_open_items = set()
+        self.reasoning_open_entry_items = set()
+        self.reasoning_finished_items = set()
+        self.reasoning_items_with_text = set()
 
     def show_status(self):
         if self.client._streaming_text:
@@ -409,6 +528,98 @@ class _CodexRenderer:
             self.spinner_shown = False
             sys.stdout.flush()
 
+    def _reasoning_entry_is_open(self, item_id=None):
+        if item_id:
+            return item_id in self.reasoning_open_entry_items
+        return "__anon__" in self.reasoning_open_entry_items
+
+    def _open_thinking(self, item_id=None, force_new=False):
+        entry_key = item_id or "__anon__"
+        if not force_new and self._reasoning_entry_is_open(item_id):
+            return
+        if self._reasoning_entry_is_open(item_id):
+            self._close_thinking(item_id)
+        prefix = CLEAR if not self.reasoning_header_written else ""
+        if self.render is not None:
+            self.render.join()
+        _log(THINKING_LOG, f"{prefix}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
+        if self.thinking_autoresize:
+            _resize_thinking(self.client.tmux_srv, self._max_think_lines)
+        self.reasoning_header_written = True
+        self.reasoning_open_entry_items.add(entry_key)
+
+    def _close_thinking(self, item_id=None):
+        entry_key = item_id or "__anon__"
+        if entry_key not in self.reasoning_open_entry_items:
+            return
+        self.render.join()
+        _log(THINKING_LOG, f"{RESET}\n")
+        self.reasoning_open_entry_items.discard(entry_key)
+
+    def _start_reasoning(self, payload, item_id=None):
+        self.reasoning_open = True
+        if item_id:
+            self.reasoning_open_items.add(item_id)
+        parts = payload.get("summary_parts") or payload.get("content_parts") or []
+        if parts:
+            self._push_reasoning_parts(parts, item_id, close_entries=True)
+            return
+        text = payload.get("summary_text") or payload.get("content_text") or ""
+        if text:
+            self._push_reasoning_text(text, item_id, close_entry=True)
+
+    def _push_reasoning_parts(self, parts, item_id=None, close_entries=False):
+        for text in parts:
+            self._push_reasoning_text(text, item_id, force_new=True, close_entry=close_entries)
+
+    def _push_reasoning_text(self, text, item_id=None, force_new=False, close_entry=False):
+        if not text:
+            return
+        self._open_thinking(item_id, force_new=force_new)
+        if item_id:
+            self.reasoning_items_with_text.add(item_id)
+        self.render.push_file(
+            THINKING_LOG,
+            text,
+            delay=0.001 if self.cfg.get("typewriter", True) else 0,
+            hesitate=False,
+        )
+        if close_entry:
+            self._close_thinking(item_id)
+
+    def _finish_reasoning(self, payload, item_id=None):
+        if item_id and item_id in self.reasoning_finished_items:
+            return
+        parts = payload.get("summary_parts") or payload.get("content_parts") or []
+        text = payload.get("summary_text") or payload.get("content_text") or ""
+        item_has_text = bool(item_id and item_id in self.reasoning_items_with_text)
+        if item_id is None:
+            item_has_text = bool(self.reasoning_items_with_text)
+        if parts and not item_has_text:
+            self._push_reasoning_parts(parts, item_id, close_entries=True)
+            item_has_text = True
+        elif text and not item_has_text:
+            self._push_reasoning_text(text, item_id, close_entry=True)
+            item_has_text = True
+        elif not item_has_text and not self._reasoning_entry_is_open(item_id):
+            self._open_thinking(item_id)
+        if self._reasoning_entry_is_open(item_id):
+            if not item_has_text:
+                _log(
+                    THINKING_LOG,
+                    f"{DIM}raciocínio registrado pelo Codex, mas sem resumo textual exposto.{RESET}\n",
+                )
+            self._close_thinking(item_id)
+        if self.reasoning_header_written and self.thinking_autoresize:
+            _resize_thinking(self.client.tmux_srv, "summary")
+        if item_id:
+            self.reasoning_finished_items.add(item_id)
+            self.reasoning_open_items.discard(item_id)
+            self.reasoning_open = bool(self.reasoning_open_items)
+        else:
+            self.reasoning_open_items.clear()
+            self.reasoning_open = False
+
     def handle(self, event):
         kind = event["kind"]
         payload = event.get("payload") or {}
@@ -418,6 +629,8 @@ class _CodexRenderer:
             self.client.observed_model = self.model_name
 
         if kind == "message.assistant.delta":
+            if self.reasoning_open:
+                self._finish_reasoning({})
             self.client._streaming_text = True
             self.text_started = True
             self.client._last_response_text += payload.get("delta", "")
@@ -444,18 +657,32 @@ class _CodexRenderer:
                           self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, self.render)
             if diff:
                 log_tool_result({"content": diff})
+        elif kind == "reasoning.started":
+            self._start_reasoning(payload, event.get("item_id"))
+        elif kind == "reasoning.summary.started":
+            item_id = event.get("item_id")
+            if item_id:
+                self.reasoning_open = True
+                self.reasoning_open_items.add(item_id)
+            self._open_thinking(item_id, force_new=True)
+        elif kind == "reasoning.delta":
+            self._push_reasoning_text(payload.get("delta", ""), event.get("item_id"))
+        elif kind == "reasoning.completed":
+            self._finish_reasoning(payload, event.get("item_id"))
         elif kind == "usage.updated":
             usage = payload.get("usage") or {}
             self.input_tokens = usage.get("input_tokens") or self.input_tokens
             self.output_tokens = usage.get("output_tokens") or self.output_tokens
             self.cache_read_tokens = usage.get("cached_input_tokens") or self.cache_read_tokens
+            self.reasoning_output_tokens = usage.get("reasoning_output_tokens") or self.reasoning_output_tokens
             self.context_window = usage.get("context_window") or self.context_window
         elif kind == "quota.updated":
             self.quota = payload.get("quota") or self.quota
         elif kind == "notice":
             notice = payload.get("notice") or {}
             message = notice.get("message")
-            if message and notice.get("code") != "waiting_on_approval":
+            hidden_codes = {"waiting_on_approval", "codex_linux_sandbox_userns"}
+            if message and notice.get("code") not in hidden_codes:
                 _log(TOOLS_LOG, f"{DIM}{_ts()}{RESET}  {YELLOW}!{RESET}  {message}\n")
         elif kind == "approval.requested":
             self.render.suspend()
@@ -540,25 +767,38 @@ def _codex_quota_for_stats(quota):
 def run_codex_turn(client, message, images=None):
     reset_col()
     client._last_response_text = ""
-    if images:
-        sys.stdout.write(f"\n{YELLOW}backend codex experimental ainda não envia imagens; ignorando anexo.{RESET}\n")
-        sys.stdout.flush()
 
     cfg = config.load()
-    proc = _CodexProcess(client.cwd)
-    adapter = _CodexAdapter(client)
+    proc = getattr(client, "_codex_proc", None)
+    adapter = getattr(client, "_codex_adapter", None)
+    boot_needed = proc is None or not proc.alive() or getattr(proc, "cwd", None) != client.cwd or adapter is None
+    if boot_needed:
+        if proc is not None:
+            proc.stop()
+        proc = _CodexProcess(client.cwd)
+        adapter = _CodexAdapter(client)
+        client._codex_proc = proc
+        client._codex_adapter = adapter
+        client._codex_thread_id = None
+        try:
+            proc.start()
+        except FileNotFoundError:
+            sys.stdout.write(
+                f"\n{YELLOW}codex CLI não encontrado.{RESET}"
+                f" {DIM}Instale/configure o Codex CLI para usar --backend codex.{RESET}\n"
+            )
+            sys.stdout.flush()
+            return False
+    client.proc = proc.proc
+
+    adapter.turn_done = False
+    adapter.inferred_done = False
+    adapter.turn_id = None
+    adapter.pending_approvals.clear()
+    adapter.resolved_approvals.clear()
+
     renderer = _CodexRenderer(client, cfg, None, time.time())
     render = None
-
-    try:
-        proc.start()
-    except FileNotFoundError:
-        sys.stdout.write(
-            f"\n{YELLOW}codex CLI não encontrado.{RESET}"
-            f" {DIM}Instale/configure o Codex CLI para usar --backend codex.{RESET}\n"
-        )
-        sys.stdout.flush()
-        return False
 
     _fd = sys.stdin.fileno()
     _old_term = termios.tcgetattr(_fd)
@@ -578,36 +818,31 @@ def run_codex_turn(client, message, images=None):
             is_streaming_cb=lambda: client._streaming_text,
         )
 
-        init_id = proc.send("initialize", {
-            "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
-            "capabilities": {"experimentalApi": True, "requestAttestation": False},
-        })
-        init_result = proc.wait_for(lambda obj: obj.get("id") == init_id, 10)
-        for event in adapter.normalize(init_result):
-            renderer.handle(event)
+        if boot_needed:
+            init_id = proc.send("initialize", {
+                "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
+                "capabilities": {"experimentalApi": True, "requestAttestation": False},
+            })
+            init_result = proc.wait_for(lambda obj: obj.get("id") == init_id, 10)
+            for event in adapter.normalize(init_result):
+                renderer.handle(event)
 
-        proc.send("initialized", request=False)
-        # First POC defaults to permissive execution in both Frollo modes. Approval
-        # support is present below, but workspace sandbox is still too noisy in the
-        # current local bubblewrap environment to make it the default UX.
-        approval_policy = "never"
-        sandbox = "danger-full-access"
-        thread_id_req = proc.send("thread/start", {
-            "cwd": client.cwd,
-            "approvalPolicy": approval_policy,
-            "sandbox": sandbox,
-        })
-        thread_result = proc.wait_for(lambda obj: obj.get("id") == thread_id_req, 10)
-        for event in adapter.normalize(thread_result):
-            renderer.handle(event)
+            proc.send("initialized", request=False)
+            # First POC defaults to permissive execution in both Frollo modes.
+            # Approval support is present below, but workspace sandbox is still too
+            # noisy in the current local bubblewrap environment to make it default UX.
+            thread_id_req = proc.send("thread/start", {
+                "cwd": client.cwd,
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+            })
+            thread_result = proc.wait_for(lambda obj: obj.get("id") == thread_id_req, 10)
+            for event in adapter.normalize(thread_result):
+                renderer.handle(event)
+            client._codex_thread_id = thread_result["result"]["thread"]["id"]
 
-        thread_id = thread_result["result"]["thread"]["id"]
-        proc.send("turn/start", {
-            "threadId": thread_id,
-            "approvalPolicy": approval_policy,
-            "sandboxPolicy": {"type": "dangerFullAccess"},
-            "input": [{"type": "text", "text": message}],
-        })
+        thread_id = client._codex_thread_id
+        proc.send("turn/start", _codex_turn_start_params(thread_id, message, images=images))
 
         saw_idle = False
         deadline = time.monotonic() + 120
@@ -651,6 +886,7 @@ def run_codex_turn(client, message, images=None):
         renderer.clear_status()
         elapsed = time.time() - renderer.start_time
         _write_stats(client, renderer, elapsed)
+        client.first_turn = False
         return False
     finally:
         if render is not None:
@@ -660,5 +896,3 @@ def run_codex_turn(client, message, images=None):
             termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
         except Exception:
             pass
-        proc.stop()
-        client.first_turn = False

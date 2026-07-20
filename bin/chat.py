@@ -361,6 +361,8 @@ class ClaudeClient:
                     sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
                     sys.stdout.flush()
                     _terminate_proc(self.proc)
+                    if getattr(self, "backend", "claude") == "codex":
+                        os.execvp(sys.argv[0], sys.argv[:])
                     os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
                 sys.stdout.write('\n')
                 sys.stdout.flush()
@@ -423,6 +425,8 @@ if __name__ == "__main__":
         if args.backend == "codex":
             if args.model or args.model_alias:
                 p.error("--backend codex ainda não suporta seleção de modelo")
+            if args.resume is not None:
+                p.error("--backend codex ainda não suporta --resume")
             model = None
         else:
             model = args.model or args.model_alias or "sonnet"
