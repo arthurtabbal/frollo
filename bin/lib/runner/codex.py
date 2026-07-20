@@ -509,6 +509,9 @@ class _CodexRenderer:
         self.reasoning_open_entry_items = set()
         self.reasoning_finished_items = set()
         self.reasoning_items_with_text = set()
+        self.assistant_item_id = None
+        self.assistant_text_started = False
+        self.assistant_last_char = ""
 
     def show_status(self):
         if self.client._streaming_text:
@@ -620,6 +623,27 @@ class _CodexRenderer:
             self.reasoning_open_items.clear()
             self.reasoning_open = False
 
+    def _push_assistant_delta(self, text, item_id=None):
+        if not text:
+            return
+        if (
+            self.assistant_text_started
+            and item_id
+            and self.assistant_item_id
+            and item_id != self.assistant_item_id
+            and self.assistant_last_char != "\n"
+        ):
+            self.client._last_response_text += "\n\n"
+            self.render.push_stdout(CHAT_FG + "\n\n" + RESET, delay=0)
+        self.assistant_item_id = item_id or self.assistant_item_id
+        self.assistant_text_started = True
+        self.assistant_last_char = text[-1]
+        self.client._last_response_text += text
+        self.render.push_stdout(
+            CHAT_FG + text + RESET,
+            delay=0.015 if self.cfg.get("typewriter", True) else 0,
+        )
+
     def handle(self, event):
         kind = event["kind"]
         payload = event.get("payload") or {}
@@ -633,9 +657,7 @@ class _CodexRenderer:
                 self._finish_reasoning({})
             self.client._streaming_text = True
             self.text_started = True
-            self.client._last_response_text += payload.get("delta", "")
-            self.render.push_stdout(CHAT_FG + payload.get("delta", "") + RESET,
-                                    delay=0.015 if self.cfg.get("typewriter", True) else 0)
+            self._push_assistant_delta(payload.get("delta", ""), event.get("item_id"))
         elif kind == "command.started":
             command = (payload.get("command") or {}).get("command") or "command"
             log_tool_call({"name": "Bash", "input": {"command": command, "description": command}},
