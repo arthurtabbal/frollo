@@ -53,6 +53,10 @@ class Turn:
         self.thinking_count = 0
         self.thinking_col = 0
         self.thinking_header_written = False
+        self.thinking_visible = False
+        self._empty_thinking_blocks = 0
+        self._thinking_notice_written = False
+        self.thinking_tokens_seen = 0
         self.spinner_shown = False
         self._suppress_perm_text = False
         self.perm_approved = False
@@ -174,19 +178,24 @@ class Turn:
                 self.client.observed_model = self.model_name
 
         elif et == "message_delta":
-            self.output_tokens = e.get("usage", {}).get("output_tokens", 0)
+            usage = e.get("usage", {})
+            self.output_tokens = usage.get("output_tokens", 0)
+            details = usage.get("output_tokens_details") or {}
+            thinking_tokens = details.get("thinking_tokens")
+            if isinstance(thinking_tokens, int):
+                self.thinking_tokens_seen = max(self.thinking_tokens_seen, thinking_tokens)
 
         elif et == "content_block_start":
             block = e.get("content_block", {})
             self.current_block = block.get("type")
             if self.current_block == "thinking":
                 # Header e resize são preguiçosos: só ocorrem quando chega texto
-                # de thinking de fato (ver content_block_delta). Opus 4.8 redige o
-                # thinking — só signature_delta, texto vazio — e nesse caso o pane
-                # não cresce nem polui com timestamp à toa.
+                # de thinking de fato (ver content_block_delta). Alguns requests
+                # chegam só com signature_delta; a nota fica deferida para o fim do
+                # turno, para um bloco vazio não apagar thinking visível anterior.
                 self.thinking_header_written = False
             elif self.current_block == "text":
-                if self.thinking_header_written and self.thinking_autoresize:
+                if self.thinking_visible and self.thinking_autoresize:
                     _resize_thinking(self.client.tmux_srv, "summary")
                 # Seta o flag antes de enfileirar — o render thread só desenha o
                 # spinner quando isso é False, então essa ordem evita que ele
@@ -213,6 +222,7 @@ class Turn:
             chunk_t = delta.get("thinking") or delta.get("text") or ""
 
             if chunk_t:
+                self.thinking_visible = True
                 if not self.thinking_header_written:
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
                     if self.thinking_autoresize:
@@ -253,9 +263,7 @@ class Turn:
             if self.thinking_header_written:
                 _log(THINKING_LOG, f"{RESET}\n")
             else:
-                # Modelo omitiu o thinking (Opus 4.8/4.7 usam display:"omitted":
-                # só signature, texto vazio). Mostra uma nota em vez de pane mudo.
-                _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}  {DIM}— o modelo omitiu o thinking (display:omitted){RESET}\n")
+                self._empty_thinking_blocks += 1
         elif self.current_block == "text":
             remainder = self.md_buf.flush()
             text = CHAT_FG + remainder + RESET if remainder else RESET
@@ -328,10 +336,21 @@ class Turn:
         if _r_usage:
             self.result_in_tok  = _r_usage.get("input_tokens")
             self.result_out_tok = _r_usage.get("output_tokens")
+        self._emit_deferred_thinking_notice()
         # 'result' delimita o fim do turno no protocolo -- em processo persistente
         # (Fase 4) o processo continua vivo e não fecha stdout sozinho depois disso,
         # então o loop de ingestão em run_turn não pode esperar EOF.
         self.turn_done = True
+
+    def _emit_deferred_thinking_notice(self):
+        if self._thinking_notice_written or self.thinking_visible or not self._empty_thinking_blocks:
+            return
+        if self.thinking_tokens_seen == 0:
+            note = "— sem thinking visível nesse turno (thinking_tokens=0)"
+        else:
+            note = "— o modelo omitiu o thinking (display:omitted)"
+        _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}  {DIM}{note}{RESET}\n")
+        self._thinking_notice_written = True
 
     def _handle_rate_limit_event(self, event):
         self.rate_limited  = True

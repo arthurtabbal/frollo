@@ -87,9 +87,39 @@ class TestThinkingDelta:
                 "type": "content_block_delta",
                 "delta": {"type": "signature_delta", "signature": "abc"},
             }))
+            turn.handle_event(_se({"type": "content_block_stop"}))
         assert turn.thinking_header_written is False
         mock_log.assert_not_called()
         mock_resize.assert_not_called()
+
+    def test_thinking_vazio_escreve_nota_so_no_result(self, fake_client):
+        turn = _turn(fake_client)
+        turn.handle_event(_se({"type": "content_block_start", "content_block": {"type": "thinking"}}))
+        with patch("lib.runner.turn._log") as mock_log:
+            turn.handle_event(_se({
+                "type": "content_block_delta",
+                "delta": {"type": "signature_delta", "signature": "abc"},
+            }))
+            turn.handle_event(_se({"type": "content_block_stop"}))
+            mock_log.assert_not_called()
+            turn.handle_event(_se({
+                "type": "message_delta",
+                "usage": {"output_tokens_details": {"thinking_tokens": 12}},
+            }))
+            turn.handle_event({"type": "result", "session_id": "sess-123"})
+        assert any("omitiu o thinking" in call.args[1] for call in mock_log.call_args_list)
+
+    def test_thinking_vazio_sem_tokens_tem_nota_diferente(self, fake_client):
+        turn = _turn(fake_client)
+        turn.handle_event(_se({"type": "content_block_start", "content_block": {"type": "thinking"}}))
+        with patch("lib.runner.turn._log") as mock_log:
+            turn.handle_event(_se({"type": "content_block_stop"}))
+            turn.handle_event(_se({
+                "type": "message_delta",
+                "usage": {"output_tokens_details": {"thinking_tokens": 0}},
+            }))
+            turn.handle_event({"type": "result", "session_id": "sess-123"})
+        assert any("thinking_tokens=0" in call.args[1] for call in mock_log.call_args_list)
 
 
 class TestTextDelta:

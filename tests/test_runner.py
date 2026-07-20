@@ -145,6 +145,7 @@ _OPUS_REDIGIDO = [
     _se({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}),
     _se({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Nope, 51 = 3*17."}}),
     _se({"type": "content_block_stop", "index": 1}),
+    _se({"type": "message_delta", "usage": {"output_tokens": 42, "output_tokens_details": {"thinking_tokens": 10}}}),
     _se({"type": "message_stop"}),
     json.dumps({"type": "result", "session_id": "s1"}),
 ]
@@ -158,6 +159,22 @@ _SONNET_VISIVEL = [
     _se({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}),
     _se({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "9 sheep."}}),
     _se({"type": "content_block_stop", "index": 1}),
+    _se({"type": "message_stop"}),
+    json.dumps({"type": "result", "session_id": "s1"}),
+]
+
+_VISIVEL_DEPOIS_VAZIO = [
+    _se({"type": "message_start", "message": {"model": "claude-sonnet-5", "usage": {"input_tokens": 1}}}),
+    _se({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+    _se({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "primeiro thinking visivel"}}),
+    _se({"type": "content_block_stop", "index": 0}),
+    _se({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+    _se({"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "abc"}}),
+    _se({"type": "content_block_stop", "index": 1}),
+    _se({"type": "content_block_start", "index": 2, "content_block": {"type": "text"}}),
+    _se({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "ok"}}),
+    _se({"type": "content_block_stop", "index": 2}),
+    _se({"type": "message_delta", "usage": {"output_tokens": 20, "output_tokens_details": {"thinking_tokens": 15}}}),
     _se({"type": "message_stop"}),
     json.dumps({"type": "result", "session_id": "s1"}),
 ]
@@ -191,6 +208,12 @@ class TestThinkingVisivel:
         assert any("9 survive" in t for t in anim_calls)
         assert any(THINKING_FG in t for t in log_calls)  # header foi escrito
         assert resize_calls  # cresceu o pane
+
+    def test_bloco_vazio_depois_de_visivel_nao_sobrescreve_com_omitido(self, fake_client, capsys):
+        log_calls, anim_calls, resize_calls = _run_stream(fake_client, _VISIVEL_DEPOIS_VAZIO)
+        assert any("primeiro thinking" in t for t in anim_calls)
+        assert not any("omitiu o thinking" in t for t in log_calls)
+        assert resize_calls
 
 
 class TestAutoResizeDesligado:
