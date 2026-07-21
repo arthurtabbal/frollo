@@ -303,11 +303,6 @@ def _codex_done_drain_finished(turn_done, last_event_at, now, grace=_CODEX_DONE_
     return bool(turn_done and (now - last_event_at) >= grace)
 
 
-def _codex_idle_timed_out(last_event_at, now, timeout=_CODEX_IDLE_TIMEOUT):
-    """Ociosidade, não duração: só conta o tempo desde o último evento."""
-    return (now - last_event_at) >= timeout
-
-
 class _CodexProcess:
     def __init__(self, cwd):
         self.cwd = cwd
@@ -401,16 +396,11 @@ class _CodexProcess:
             pass
 
     def tail_stderr(self, lines=12):
-        try:
-            return "\n".join(self.stderr_log.read_text(errors="replace").splitlines()[-lines:])
-        except OSError:
-            return ""
+        return errors.tail_file(self.stderr_log, lines)
 
     def exit_detail(self):
         code = self.proc.poll() if self.proc is not None else None
-        tail = self.tail_stderr()
-        head = f"exit code: {code}"
-        return f"{head}\n{tail}" if tail else head
+        return errors.process_diagnostics(code, self.stderr_log)
 
     def wait_for(self, predicate, timeout):
         deadline = time.monotonic() + timeout
@@ -445,7 +435,9 @@ class _CodexAdapter:
         self.inferred_done = False
         self.pending_approvals = {}
         self.resolved_approvals = set()
-        self.unknown_methods = set()
+        # Dedupe de método/item de protocolo sem handler (ver errors.seen_first_time) —
+        # guarda strings (método) e tuplas (phase, tipo do item) no mesmo set.
+        self.unknown_keys = set()
 
     def _provider(self):
         return {
@@ -487,12 +479,14 @@ class _CodexAdapter:
         out = []
         if not isinstance(msg, dict):
             return [self._error_event(f"mensagem não-objeto do codex: {msg!r}",
-                                      code="codex_bad_message", source="transport", raw=msg)]
+                                      code="bad_message", source="transport", raw=msg)]
         if "_raw" in msg:
             # _stdout_reader não conseguiu parsear a linha: pânico do Rust, log
-            # solto, banner. Antes isso ia pro raw log e morria ali.
+            # solto, banner. Antes isso ia pro raw log e morria ali. Mesmo code
+            # que o backend Claude usa pra linha ilegível de stdout (turn.py) —
+            # é a mesma falha de forma, canal diferente.
             return [self._error_event(str(msg["_raw"])[:400],
-                                      code="codex_non_json_line", source="transport", raw=msg)]
+                                      code="non_json_line", source="transport", raw=msg)]
         if "error" in msg and "method" not in msg:
             err = msg.get("error")
             if isinstance(err, dict):
@@ -518,7 +512,7 @@ class _CodexAdapter:
 
         if method == "configWarning":
             summary = params.get("summary") or "Codex config warning"
-            code = "codex_linux_sandbox_userns" if summary == _CODEX_LINUX_SANDBOX_WARNING else None
+            code = "linux_sandbox_userns" if summary == _CODEX_LINUX_SANDBOX_WARNING else None
             out.append(self.event("notice", {
                 "notice": {"level": "warning", "message": summary, "code": code}
             }, raw=msg))
@@ -660,20 +654,19 @@ class _CodexAdapter:
         if method is None:
             return [self._error_event(
                 "mensagem do codex sem method nem result",
-                code="codex_malformed_message", source="transport", raw=msg)]
+                code="malformed_message", source="transport", raw=msg)]
         if "id" in msg:
             return [self._error_event(
                 f"request do codex sem handler no Frollo: {method}",
-                code="codex_unhandled_request", source="transport", raw=msg,
+                code="unhandled_request", source="transport", raw=msg,
                 request={"id": msg.get("id"), "method": method})]
-        if method in self.unknown_methods:
+        if not errors.seen_first_time(self.unknown_keys, method):
             return []
-        self.unknown_methods.add(method)
         return [self.event("notice", {
             "notice": {
                 "level": "warning",
                 "message": f"evento do codex não mapeado: {method}",
-                "code": "codex_unknown_notification",
+                "code": "unknown_notification",
             }
         }, raw=msg)]
 
@@ -720,16 +713,14 @@ class _CodexAdapter:
         typ = item.get("type")
         if typ == "error":
             message = item.get("message") or item.get("error") or "erro sem mensagem no item"
-            return [self._error_event(str(message), code="codex_item_error", raw=raw)]
-        key = (phase, typ)
-        if key in self.unknown_methods:
+            return [self._error_event(str(message), code="item_error", raw=raw)]
+        if not errors.seen_first_time(self.unknown_keys, (phase, typ)):
             return []
-        self.unknown_methods.add(key)
         return [self.event("notice", {
             "notice": {
                 "level": "warning",
                 "message": f"item do codex não mapeado em {phase}: {typ}",
-                "code": "codex_unknown_item",
+                "code": "unknown_item",
             }
         }, raw=raw)]
 
@@ -1019,7 +1010,7 @@ class _CodexRenderer:
         elif kind == "notice":
             notice = payload.get("notice") or {}
             message = notice.get("message")
-            hidden_codes = {"waiting_on_approval", "codex_linux_sandbox_userns"}
+            hidden_codes = {"waiting_on_approval", "linux_sandbox_userns"}
             if not message:
                 pass
             elif notice.get("level") == "warning":
@@ -1048,7 +1039,12 @@ class _CodexRenderer:
         return None
 
     def _report_error(self, payload, event=None):
-        """Erro do backend chegando na tela: chat, pane de tools e errors.jsonl."""
+        """Erro do backend chegando na tela: chat, pane de tools e errors.jsonl.
+
+        Choke point único do lado Codex — todo `kind == "error"` do adapter e
+        toda falha de boot/handshake/processo passam por aqui, carregando a
+        `severity` no próprio payload quando não é o "error" default (fatal
+        para o que aborta o turno de vez: processo morto, timeout de boot/ociosidade)."""
         error = payload.get("error") or {}
         if self.render is not None:
             self.render.join()
@@ -1056,6 +1052,7 @@ class _CodexRenderer:
         return errors.report(
             f"codex/{error.get('source') or 'provider'}",
             error.get("message") or "erro sem mensagem",
+            severity=error.get("severity") or "error",
             code=error.get("code"),
             detail=payload.get("detail"),
             raw=(event or {}).get("raw"),
@@ -1143,8 +1140,9 @@ def _codex_await(proc, adapter, renderer, request_id, label, timeout=_CODEX_BOOT
         renderer._report_error({
             "error": {
                 "message": f"codex não respondeu {label} em {timeout}s",
-                "code": "codex_boot_timeout",
+                "code": "boot_timeout",
                 "source": "transport",
+                "severity": "fatal",
             },
             "detail": proc.exit_detail(),
         })
@@ -1177,7 +1175,7 @@ def run_codex_turn(client, message, images=None):
         except (FileNotFoundError, PermissionError) as exc:
             errors.report(
                 "codex", "não foi possível iniciar `codex app-server`",
-                severity="fatal", code="codex_spawn_failed", detail=str(exc),
+                severity="fatal", code="spawn_failed", detail=str(exc),
                 tmux_srv=client.tmux_srv,
             )
             sys.stdout.write(
@@ -1192,7 +1190,7 @@ def run_codex_turn(client, message, images=None):
     adapter.turn_id = None
     adapter.pending_approvals.clear()
     adapter.resolved_approvals.clear()
-    adapter.unknown_methods.clear()
+    adapter.unknown_keys.clear()
 
     renderer = _CodexRenderer(client, cfg, None, time.time())
     render = None
@@ -1242,8 +1240,9 @@ def run_codex_turn(client, message, images=None):
                 renderer._report_error({
                     "error": {
                         "message": "thread/start respondeu sem id de thread",
-                        "code": "codex_no_thread_id",
+                        "code": "no_thread_id",
                         "source": "transport",
+                        "severity": "fatal",
                     },
                 }, {"raw": thread_result})
                 return False
@@ -1259,8 +1258,9 @@ def run_codex_turn(client, message, images=None):
                 renderer._report_error({
                     "error": {
                         "message": "o processo `codex app-server` morreu no meio do turno",
-                        "code": "codex_process_died",
+                        "code": "process_died",
                         "source": "transport",
+                        "severity": "fatal",
                     },
                     "detail": proc.exit_detail(),
                 })
@@ -1274,12 +1274,13 @@ def run_codex_turn(client, message, images=None):
                 now = time.monotonic()
                 if _codex_done_drain_finished(adapter.turn_done, last_event_at, now):
                     break
-                if _codex_idle_timed_out(last_event_at, now):
+                if errors.idle_timed_out(last_event_at, now, _CODEX_IDLE_TIMEOUT):
                     renderer._report_error({
                         "error": {
                             "message": f"nenhum evento do codex por {_CODEX_IDLE_TIMEOUT}s — turno abortado",
-                            "code": "codex_idle_timeout",
+                            "code": "idle_timeout",
                             "source": "transport",
+                            "severity": "fatal",
                         },
                         "detail": proc.tail_stderr(),
                     })

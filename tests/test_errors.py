@@ -1,10 +1,17 @@
 """Erro nenhum pode passar em silêncio — este arquivo é a garantia disso.
 
-Cobre o sink (`lib/errors.py`) e a invariante do adapter Codex: qualquer mensagem
-que o Frollo não entenda vira evento visível, nunca lista vazia.
+Cobre o sink compartilhado (`lib/errors.py`) e a invariante dos dois backends:
+qualquer mensagem/situação que o Frollo não entenda ou não consiga completar
+vira evento visível, nunca lista vazia ou timeout mudo. A detecção é por
+protocolo (Codex fala JSON-RPC, Claude fala stream-json — não dá pra unificar
+sem fingir que os dois falam a mesma língua); o tratamento (`errors.report*`,
+`errors.tail_file`, `errors.process_diagnostics`, `errors.idle_timed_out`,
+`errors.report_once`/`seen_first_time`) é o mesmo código dos dois lados.
 """
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
+import lib.runner as runner_mod
 from lib import errors
 from lib.runner.codex import (
     _CODEX_IDLE_TIMEOUT,
@@ -19,7 +27,6 @@ from lib.runner.codex import (
     _CodexProcess,
     _CodexRenderer,
     _codex_await,
-    _codex_idle_timed_out,
 )
 from lib.runner.turn import Turn
 
@@ -91,11 +98,11 @@ class TestLog:
 
 class TestSaida:
     def test_erro_aparece_no_chat_com_mensagem_e_codigo(self, sink, capsys):
-        errors.report("codex/transport", "processo morreu", code="codex_process_died", tools=False)
+        errors.report("codex/transport", "processo morreu", code="process_died", tools=False)
 
         out = capsys.readouterr().out
         assert "processo morreu" in out
-        assert "codex_process_died" in out
+        assert "process_died" in out
         assert "codex/transport" in out
 
     def test_chat_desligado_nao_escreve_no_stdout_mas_loga(self, sink, capsys):
@@ -170,7 +177,7 @@ class TestAdapterNuncaEngoleMensagem:
         eventos = self._adapter().normalize({"_raw": "thread 'main' panicked at src/main.rs:42"})
 
         assert eventos[0]["kind"] == "error"
-        assert eventos[0]["payload"]["error"]["code"] == "codex_non_json_line"
+        assert eventos[0]["payload"]["error"]["code"] == "non_json_line"
 
     def test_request_sem_handler_vira_erro_com_request_para_recusa(self):
         eventos = self._adapter().normalize({"id": 9, "method": "session/askSomething", "params": {}})
@@ -194,7 +201,7 @@ class TestAdapterNuncaEngoleMensagem:
             "params": {"item": {"id": "i1", "type": "webSearch"}},
         })
 
-        assert eventos[0]["payload"]["notice"]["code"] == "codex_unknown_item"
+        assert eventos[0]["payload"]["notice"]["code"] == "unknown_item"
 
     def test_item_de_erro_vira_evento_de_erro(self):
         eventos = self._adapter().normalize({
@@ -221,14 +228,63 @@ class TestAdapterNuncaEngoleMensagem:
         assert self._adapter().normalize(msg), f"mensagem engolida em silêncio: {msg!r}"
 
 
-class TestTurnoNuncaTravaEmSilencio:
+class TestIdleTimeoutCompartilhado:
+    """errors.idle_timed_out é o mesmo teste de ociosidade usado pelos dois
+    backends (ver o `while` de run_turn em runner/__init__.py e o de
+    run_codex_turn em runner/codex.py) — por isso mora no sink, não em cada
+    adapter."""
+
     def test_turno_longo_com_eventos_nao_expira(self):
         # 10 min de turno, último evento há 5s: segue vivo.
-        assert not _codex_idle_timed_out(last_event_at=600.0, now=605.0)
+        assert not errors.idle_timed_out(last_event_at=600.0, now=605.0, timeout=_CODEX_IDLE_TIMEOUT)
 
     def test_silencio_prolongado_expira(self):
-        assert _codex_idle_timed_out(last_event_at=0.0, now=_CODEX_IDLE_TIMEOUT + 0.1)
+        assert errors.idle_timed_out(last_event_at=0.0, now=_CODEX_IDLE_TIMEOUT + 0.1, timeout=_CODEX_IDLE_TIMEOUT)
 
+
+class TestDiagnosticosCompartilhados:
+    """tail_file/process_diagnostics são o mesmo par exit-code+stderr que Claude
+    e Codex montam quando o processo morre ou não responde no boot."""
+
+    def test_tail_file_devolve_ultimas_linhas(self, tmp_path):
+        log = tmp_path / "stderr.log"
+        log.write_text("\n".join(f"linha {i}" for i in range(20)) + "\n")
+
+        assert errors.tail_file(log, lines=3) == "linha 17\nlinha 18\nlinha 19"
+
+    def test_tail_file_arquivo_ausente_nao_levanta(self, tmp_path):
+        assert errors.tail_file(tmp_path / "nao-existe.log") == ""
+
+    def test_process_diagnostics_junta_exit_code_e_tail(self, tmp_path):
+        log = tmp_path / "stderr.log"
+        log.write_text("boom\n")
+
+        assert errors.process_diagnostics(1, log) == "exit code: 1\nboom"
+
+    def test_process_diagnostics_sem_tail_so_exit_code(self, tmp_path):
+        assert errors.process_diagnostics(None, tmp_path / "nao-existe.log") == "exit code: None"
+
+
+class TestDedupeCompartilhado:
+    def test_report_once_so_reporta_na_primeira_vez(self, sink):
+        log, _ = sink
+        seen = set()
+
+        primeiro = errors.report_once(seen, "x", "frollo", "evento novo", chat=False, tools=False)
+        segundo = errors.report_once(seen, "x", "frollo", "evento novo", chat=False, tools=False)
+
+        assert primeiro is not None and segundo is None
+        assert len(_records(log)) == 1
+
+    def test_seen_first_time_guarda_a_chave(self):
+        seen = set()
+
+        assert errors.seen_first_time(seen, "a") is True
+        assert errors.seen_first_time(seen, "a") is False
+        assert errors.seen_first_time(seen, "b") is True
+
+
+class TestTurnoNuncaTravaEmSilencio:
     def test_request_sem_handler_e_recusado_no_protocolo(self, tmp_path):
         proc = _CodexProcess(str(tmp_path))
         proc.proc = MagicMock()
@@ -265,7 +321,8 @@ class TestTurnoNuncaTravaEmSilencio:
         assert _codex_await(proc, _CodexAdapter(MagicMock()), renderer, 1, "initialize") is None
 
         payload = renderer._report_error.call_args[0][0]
-        assert payload["error"]["code"] == "codex_boot_timeout"
+        assert payload["error"]["code"] == "boot_timeout"
+        assert payload["error"]["severity"] == "fatal"
         assert payload["detail"] == "exit code: 1"
 
 
@@ -305,7 +362,7 @@ class TestBackendClaudeNaoEngoleErro:
 
         rec = _records(log)[0]
         assert rec["severity"] == "warning"
-        assert rec["code"] == "non_json_stdout"
+        assert rec["code"] == "non_json_line"
 
     def test_tipo_de_evento_desconhecido_e_registrado_uma_vez(self, sink, tmp_path, monkeypatch):
         log, _ = sink
@@ -318,6 +375,75 @@ class TestBackendClaudeNaoEngoleErro:
         recs = _records(log)
         assert len(recs) == 1
         assert recs[0]["code"] == "unknown_event_type"
+
+
+class _FakeRenderQueue:
+    """RenderQueue sem thread real — só o suficiente pra run_turn não travar
+    esperando uma animação que este teste não precisa observar."""
+    def start(self, **kw): pass
+    def stop(self): pass
+    def cancel(self): pass
+    def join(self): pass
+    def suspend(self): pass
+    def resume(self): pass
+    def push_stdout(self, text, delay=0.015): pass
+    def push_file(self, path, text, delay=0.030, on_newline=None, hesitate=True): pass
+
+
+class TestClaudeIdleTimeoutIntegracao:
+    """O buraco original: processo `claude` vivo mas mudo travava o turno pra
+    sempre (nenhum evento, nenhum erro). run_turn agora usa o mesmo
+    errors.idle_timed_out do Codex no seu próprio loop `select`."""
+
+    def test_stdout_mudo_expira_e_reporta_fatal(self, sink):
+        log, _ = sink
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stderr = MagicMock()
+        proc.stderr.readline.return_value = ""  # EOF imediato — thread stderr não fica presa
+        proc.poll.return_value = None
+
+        client = MagicMock()
+        client.mode.value = "normal"
+        client.first_turn = True
+        client.resume_id = None
+        client.nvim_pane = ""
+        client.tmux_srv = ""
+        client.editor_bin = ""
+        client.cwd = "/tmp"
+        client._streaming_text = False
+        client._total_input_tokens = 0
+        client._total_output_tokens = 0
+        client._total_elapsed = 0.0
+        client._total_cost = 0.0
+
+        calls = {"n": 0}
+
+        def _clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 200.0  # segundo relógio já além do teto de 120s
+
+        rundir = Path(tempfile.mkdtemp())
+        devnull = open(os.devnull, "r")
+        try:
+            with patch("lib.runner.subprocess.Popen", return_value=proc), \
+                 patch("lib.runner.RUNDIR", rundir), \
+                 patch("lib.runner.turn.RUNDIR", rundir), \
+                 patch("lib.runner.select.select", return_value=([], [], [])), \
+                 patch("lib.runner.time.monotonic", side_effect=_clock), \
+                 patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+                 patch("lib.runner.termios.tcsetattr"), \
+                 patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+                 patch("lib.runner.RenderQueue", side_effect=_FakeRenderQueue), \
+                 patch.object(sys, "stdin", devnull):
+                runner_mod.run_turn(client, "oi")
+        finally:
+            devnull.close()
+
+        rec = _records(log)[0]
+        assert rec["code"] == "idle_timeout"
+        assert rec["severity"] == "fatal"
+        assert rec["source"] == "claude"
 
 
 class TestRendererReportaErro:
@@ -353,7 +479,7 @@ class TestRendererReportaErro:
             "payload": {"notice": {
                 "level": "warning",
                 "message": "sandbox sem user namespaces",
-                "code": "codex_linux_sandbox_userns",
+                "code": "linux_sandbox_userns",
             }},
             "provider": {},
         })

@@ -127,10 +127,12 @@ class Turn:
             # stderr é um canal separado (_stderr_reader em run_turn) — uma linha
             # não-JSON no stdout é anomalia, não caminho esperado. Vai pro pane de
             # tools e pro errors.jsonl; fora do chat pra não picotar o texto do
-            # assistente com ruído que raramente é acionável na hora.
+            # assistente com ruído que raramente é acionável na hora. Mesmo code
+            # que o backend Codex usa pro equivalente dele (codex.py) — é a mesma
+            # falha de forma, canal diferente.
             errors.report(
                 "claude/stdout", "linha não-JSON no stdout do claude",
-                severity="warning", code="non_json_stdout", detail=raw[:400],
+                severity="warning", code="non_json_line", detail=raw[:400],
                 tmux_srv=getattr(self.client, "tmux_srv", None), chat=False,
             )
             return
@@ -166,15 +168,14 @@ class Turn:
         elif etype not in ("system", None):
             with open(RUNDIR / "events.log", "a") as f:
                 f.write(json.dumps(event) + "\n")
-            if etype not in self.unknown_event_types:
-                # Lacuna de cobertura do protocolo, não falha do turno: fica no
-                # errors.jsonl (uma vez por tipo) sem gastar espaço de tela.
-                self.unknown_event_types.add(etype)
-                errors.report(
-                    "claude/protocolo", f"evento do stream-json não mapeado: {etype}",
-                    severity="warning", code="unknown_event_type", raw=event,
-                    chat=False, tools=False,
-                )
+            # Lacuna de cobertura do protocolo, não falha do turno: fica no
+            # errors.jsonl uma vez por tipo (report_once), sem gastar espaço de tela.
+            errors.report_once(
+                self.unknown_event_types, etype,
+                "claude/protocolo", f"evento do stream-json não mapeado: {etype}",
+                severity="warning", code="unknown_event_type", raw=event,
+                chat=False, tools=False,
+            )
 
     # -- stream_event ---------------------------------------------------
 

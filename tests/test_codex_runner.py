@@ -213,7 +213,7 @@ class TestCodexAdapter:
         })
 
         assert events[0]["kind"] == "notice"
-        assert events[0]["payload"]["notice"]["code"] == "codex_linux_sandbox_userns"
+        assert events[0]["payload"]["notice"]["code"] == "linux_sandbox_userns"
 
     def test_mapeia_reasoning_delta_e_completion(self):
         adapter = _adapter()
@@ -307,7 +307,7 @@ class TestCodexRenderer:
                 "kind": "notice",
                 "payload": {"notice": {
                     "message": "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.",
-                    "code": "codex_linux_sandbox_userns",
+                    "code": "linux_sandbox_userns",
                 }},
                 "provider": {},
             })

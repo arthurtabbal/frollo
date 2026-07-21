@@ -141,21 +141,49 @@ Tudo passa por `errors.report()` (`lib/errors.py`), que faz três coisas de uma 
 indisponível, evento de protocolo não mapeado) — e mesmo assim o arquivo registra. Severidades:
 `warning` (âmbar), `error` e `fatal` (vermelho, `theme.ERROR_FG`).
 
+### Tratamento unificado, detecção por backend
+
+Claude fala `stream-json` num pipe unidirecional; Codex fala JSON-RPC bidirecional num
+`app-server` (o servidor pode fazer request *pro* Frollo, e travar esperando resposta). As formas de
+falha de cada protocolo são genuinamente diferentes — por isso `turn.py` (Claude) e `codex.py`
+(Codex) continuam com sua própria detecção, cada um a fio da sua própria issue de protocolo. O que
+é compartilhado é o *tratamento*, hoje inteiramente em `lib/errors.py`:
+
+- `report()`/`report_exception()` — o sink em si (chat + tools + log).
+- `tail_file()`/`process_diagnostics()` — exit code + tail do stderr; usado sempre que um
+  subprocesso (`claude` ou `codex app-server`) morre ou não responde no boot.
+- `idle_timed_out(last_event_at, now, timeout)` — teste de ociosidade puro, sem estado; os dois
+  loops (`run_turn` e `run_codex_turn`) chamam o mesmo teste com seu próprio relógio.
+- `seen_first_time()`/`report_once()` — dedupe de "já vi essa mensagem desconhecida", pra não
+  repetir aviso a cada evento do turno.
+
+Os **códigos** de erro (`code=`) são vocabulário neutro de backend — `process_died`,
+`idle_timeout`, `boot_timeout`, `spawn_failed`, `non_json_line` significam a mesma coisa nos dois
+lados. A identidade do backend vive no campo `source` (`"claude"`, `"codex/transport"`,
+`"codex/provider"`), nunca no `code` — antes da unificação um carregava os dois (`codex_process_died`
+vs `claude_process_died`) e a mesma falha virava severidades diferentes (`fatal` num lado, `error`
+no outro) sem motivo. Códigos que só existem porque o protocolo do Codex tem uma forma que o do
+Claude não tem (`unhandled_request`, `unknown_notification`, `unknown_item`, `no_thread_id`) não têm
+equivalente Claude — isso é esperado, não ambiguidade.
+
 Caminhos que estavam mudos e hoje reportam:
 
-| Caminho | Antes | Agora |
-|---|---|---|
-| Resposta JSON-RPC de erro do Codex | `normalize()` devolvia `[]` — o turno girava até o teto de 120s | evento `error` → chat + tools + log |
-| Linha não-JSON no stdout do app-server | virava `{"_raw": …}` e morria no raw log | evento `error` (`codex_non_json_line`) |
-| Request do servidor sem handler | ninguém respondia — **o Codex bloqueava esperando**, "pensando" infinito de verdade | `respond_error` com `-32601` + erro na tela |
-| Método/item do Codex não mapeado | `[]` | `notice` de warning, uma vez por método (dedupe em `adapter.unknown_methods`) |
-| Processo `codex`/`claude` morto no meio do turno | loop rodava até o teto sem mensagem | `turn.failed` + erro com exit code e tail do stderr |
-| Handshake (`initialize`/`thread/start`) falho | `TypeError` genérico ou timeout mudo | `_codex_await` aborta o turno explicando o motivo |
-| `result` do Claude com `is_error`/`subtype` | turno acabava sem texto e sem explicação | erro com a mensagem do CLI |
-| Teto de turno de 120s | corte de duração — matava turno longo saudável | `_codex_idle_timed_out`: 120s **sem nenhum evento**, com falha explícita |
+| Caminho | Backend | Antes | Agora |
+|---|---|---|---|
+| Resposta JSON-RPC de erro | Codex | `normalize()` devolvia `[]` — o turno girava até o teto de 120s | evento `error` → chat + tools + log |
+| Linha não-JSON no stdout | ambos | virava `{"_raw": …}` (Codex) ou morria no raw log (Claude) | `error`/`warning` (`non_json_line`) |
+| Request do servidor sem handler | Codex | ninguém respondia — **o Codex bloqueava esperando**, "pensando" infinito de verdade | `respond_error` com `-32601` + erro na tela |
+| Método/item não mapeado | Codex | `[]` | `notice` de warning, uma vez por método (`errors.seen_first_time`) |
+| Tipo de evento não mapeado | Claude | ia só pro `events.log` | `warning` uma vez por tipo (`errors.report_once`) |
+| Processo morto no meio do turno | ambos | loop rodava até o teto sem mensagem | `fatal` com exit code e tail do stderr (`errors.process_diagnostics`) |
+| Handshake (`initialize`/`thread/start`) falho | Codex | `TypeError` genérico ou timeout mudo | `_codex_await` aborta o turno explicando o motivo |
+| `result` com `is_error`/`subtype` | Claude | turno acabava sem texto e sem explicação | erro com a mensagem do CLI |
+| Teto de turno de 120s | ambos | corte de duração — matava turno longo saudável | `errors.idle_timed_out`: 120s **sem nenhum evento**, com falha explícita |
 
 O teto virou ociosidade de propósito: um turno de 10 minutos que segue emitindo eventos é trabalho,
-não travamento. Só o silêncio absoluto é sintoma.
+não travamento. Só o silêncio absoluto é sintoma — e agora vale para os dois backends, não só o
+Codex (o backend Claude não tinha teto nenhum até essa unificação: um processo vivo mas mudo girava
+o spinner pra sempre).
 
 ## Testes
 
@@ -182,7 +210,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | **Render desacoplado do loop de eventos** | `lib/runner/turn.py`, `lib/runner/render.py` | Fase 3 do plano: `run_turn` foi partido em `Turn` (máquina de estados do turno, `handle_line` por tipo de evento) + `RenderQueue` (fila única que roda o typewriter numa thread própria). O loop de ingestão em `run_turn` só lê `proc.stdout` e despacha pro `Turn`, nunca mais dorme por animação — resolve o backpressure que travava o CLI quando o modelo produzia mais rápido que o typewriter consumia |
 | **Processo `claude` persistente** | `lib/runner/__init__.py` (`_ensure_proc`/`_terminate_proc`), `lib/config.py` (`persistent`) | Atrás da flag `persistent: true` (default `false`): reaproveita o mesmo processo `claude --input-format stream-json` entre turnos em vez de respawnar com `--resume` a cada um — elimina o cold-start + reload do transcript, que crescia com o tamanho da sessão. Troca de `/model`/modo mata e respawna (`_terminate_proc`, com `SIGKILL` de reserva — o processo não sai sozinho ao fechar stdin, achado do spike de protocolo). `/refresh`, `/new` e Ctrl+D também chamam `_terminate_proc` antes do `execvp`/saída, pra não deixar processo órfão |
 | **`--thinking-display summarized` forçado no spawn** | `lib/runner/__init__.py:124` | A Anthropic mudou (jul/2026) o default de `thinking.display` na API para `"omitted"` em modelos novos (Sonnet 5, Opus 4.8/4.7) — antes era `"summarized"`. Isso quebrou o pane de thinking pro Sonnet (só Haiku 4.5 continuou mostrando, por não estar nessa leva). Investigado via engenharia reversa do binário `claude` (2.1.201): em modo `--print` + `--output-format stream-json`, o CLI **não** seta um display explícito por conta própria (`showThinkingSummaries` do settings.json só se aplica em modo interativo) — então herda o default da API, que agora é omitted. Achamos uma flag oculta (`.hideHelp()`, não aparece em `--help`, e segue oculta no `claude` 2.1.215, mas funcional): `--thinking-display <summarized\|omitted>`. Setá-la explicitamente no spawn também marca a sessão como "display explícito" internamente, o que evita o CLI reforçar `omitted` de volta em sessões não-interativas. Adicionada incondicionalmente no `cmd` de `_ensure_proc` — restaura o thinking do Sonnet sem depender do default (instável) da API |
-| **Tratamento de erros** | `lib/errors.py`, `lib/runner/panes.py` (`_grow_tools`) | Sink único: todo caminho de falha chama `errors.report()`, que appenda em `~/.config/frollo/errors.jsonl`, escreve linha no chat e detalha no pane de tools (que **cresce** até caber, teto de meia janela). Fechou os buracos que faziam turno virar spinner infinito — ver seção "Erros nunca em silêncio" |
+| **Tratamento de erros** | `lib/errors.py`, `lib/runner/panes.py` (`_grow_tools`) | Sink único: todo caminho de falha chama `errors.report()`, que appenda em `~/.config/frollo/errors.jsonl`, escreve linha no chat e detalha no pane de tools (que **cresce** até caber, teto de meia janela). Compartilhado pelos dois backends — `tail_file`/`process_diagnostics` (exit code + stderr), `idle_timed_out` (teste de ociosidade) e `seen_first_time`/`report_once` (dedupe) vivem aqui, não duplicados em `turn.py`/`codex.py`; só a *detecção* (o que conta como falha em cada protocolo) é específica de cada backend. Fechou os buracos que faziam turno virar spinner infinito — ver seção "Erros nunca em silêncio" |
 | **Backend Codex App Server** | `lib/runner/codex.py`, `lib/runner/protocol.py`, `lib/runner/capabilities.py` | `frollo --backend codex` inicia `codex app-server`, cria thread, envia `turn/start` e traduz mensagens, reasoning, comandos, diffs, approvals, uso e cota para eventos `frollo.event.v0`. É experimental, mas real: o processo Codex é persistente durante a sessão do client. Limites atuais ficam declarados por capability: sem `/model`, sem `--resume`/`/refresh`, sem custo por turno. |
 
 ## Módulos (bin/)
@@ -203,7 +231,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `lib/runner/permissions.py` | ~155 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
 | `lib/runner/stats.py` | ~140 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
 | `lib/runner/text.py` | ~60 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla; `col_is_mid_line`/`_advance_col` (posição pra `RenderQueue`) |
-| `lib/errors.py` | ~160 | Sink único de erros: `record`/`log`/`chat_lines`/`tools_text`/`report`/`report_exception`. Nada aqui levanta exceção |
+| `lib/errors.py` | ~200 | Sink único de erros, compartilhado pelos dois backends: `record`/`log`/`chat_lines`/`tools_text`/`report`/`report_exception` + os helpers de diagnóstico (`tail_file`, `process_diagnostics`), ociosidade (`idle_timed_out`) e dedupe (`seen_first_time`, `report_once`). Nada aqui levanta exceção |
 | `lib/usage.py` | ~120 | `fetch_usage()`: `GET /api/oauth/usage` via `urllib` (stdlib), Bearer do accessToken OAuth; parseia `limits[]` + chaves legadas de cota |
 | `lib/tools/__init__.py` | ~100 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
 | `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |

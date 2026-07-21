@@ -58,6 +58,58 @@ def _detail_lines(detail, limit):
     return lines[:limit] + [f"… (+{len(lines) - limit} linhas em {ERROR_LOG})"]
 
 
+def tail_file(path, lines=12):
+    """Últimas `lines` de um arquivo de log. Nunca levanta — arquivo ausente vira ''."""
+    try:
+        return "\n".join(Path(path).read_text(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def process_diagnostics(exit_code, stderr_log, tail_lines=12):
+    """Detalhe padrão para falha de subprocesso: exit code + tail do stderr.
+
+    Compartilhado entre os backends Claude e Codex — os dois spawnam um processo
+    de linha de comando e os dois precisam do mesmo par de fatos quando ele
+    morre ou trava: o que ele devolveu e o que ele disse por último."""
+    tail = tail_file(stderr_log, tail_lines) if stderr_log else ""
+    head = f"exit code: {exit_code}"
+    return f"{head}\n{tail}" if tail else head
+
+
+def idle_timed_out(last_event_at, now, timeout):
+    """Ociosidade, não duração: só conta o tempo desde o último evento visto.
+
+    Um turno que segue emitindo eventos nunca expira, por mais longo que seja —
+    só o silêncio absoluto após `timeout` segundos é falha. Backend-neutro:
+    Claude e Codex alimentam o mesmo teste com seus próprios relógios."""
+    return (now - last_event_at) >= timeout
+
+
+def seen_first_time(seen, key):
+    """True só na primeira vez que `key` aparece em `seen` — e já registra.
+
+    `seen` é um set mantido pelo chamador (escopo de vida do adapter/turno).
+    Primitivo de dedupe usado por quem constrói o próprio evento (ex.: `notice`
+    de protocolo do Codex) em vez de chamar `report()` diretamente — para esse
+    segundo caso use `report_once`."""
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
+def report_once(seen, key, source, message, **kwargs):
+    """Como `report`, mas muda após a primeira vez que `key` aparece em `seen`.
+
+    Evita inundar chat/tools/log quando o mesmo tipo de mensagem desconhecida
+    repete a cada evento do turno (ex.: um tipo de evento do stream-json sem
+    handler). `seen` é mantido pelo chamador."""
+    if not seen_first_time(seen, key):
+        return None
+    return report(source, message, **kwargs)
+
+
 def record(source, message, *, severity="error", code=None, detail=None, raw=None):
     """Monta o registro canônico de erro. Puro — não escreve em lugar nenhum."""
     return {

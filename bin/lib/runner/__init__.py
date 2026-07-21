@@ -26,12 +26,10 @@ from ..tools import RUNDIR, _ts
 from .. import config
 from .. import errors
 
-
-def _tail_file(path, lines=12):
-    try:
-        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
-    except OSError:
-        return ""
+# Teto de ociosidade, não de duração — mesmo valor e mesmo conceito do backend
+# Codex (ver _CODEX_IDLE_TIMEOUT em runner/codex.py): um turno longo que segue
+# emitindo linhas nunca é cortado; só o silêncio absoluto vira falha explícita.
+_CLAUDE_IDLE_TIMEOUT = 120
 
 
 def _parse_rate_limit_line(raw):
@@ -180,7 +178,7 @@ def run_turn(client, message, images=None):
     except (FileNotFoundError, PermissionError) as exc:
         errors.report(
             "claude", "não foi possível iniciar o CLI `claude`",
-            severity="fatal", code="claude_spawn_failed", detail=str(exc),
+            severity="fatal", code="spawn_failed", detail=str(exc),
             tmux_srv=client.tmux_srv,
         )
         sys.stdout.write(
@@ -243,9 +241,18 @@ def run_turn(client, message, images=None):
             client._rl_lock = threading.Lock()
             threading.Thread(target=_stderr_reader, args=(proc, client, client._rl_lock), daemon=True).start()
 
+        _idle_hit = False
+        _eof = False
+        last_line_at = time.monotonic()
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.15)
             if not ready:
+                if errors.idle_timed_out(last_line_at, time.monotonic(), _CLAUDE_IDLE_TIMEOUT):
+                    # Silêncio absoluto no stdout, processo ainda vivo — o mesmo
+                    # sintoma que motivou o teto de ociosidade do Codex (ver
+                    # runner/codex.py): sem isso o turno gira pra sempre.
+                    _idle_hit = True
+                    break
                 continue
             _eof = False
             while ready:
@@ -253,6 +260,7 @@ def run_turn(client, message, images=None):
                 if not raw:
                     _eof = True
                     break
+                last_line_at = time.monotonic()
                 turn.handle_line(raw)
                 if turn.turn_done:
                     # 'result' delimita o turno no protocolo — em modo persistente
@@ -268,15 +276,20 @@ def run_turn(client, message, images=None):
         # voltar a escrever no stdout sozinho (checks abaixo).
         render.stop()
 
-        if _eof and not turn.turn_done:
+        if _idle_hit:
+            errors.report(
+                "claude", f"nenhuma linha do claude por {_CLAUDE_IDLE_TIMEOUT}s — turno abortado",
+                severity="fatal", code="idle_timeout",
+                detail=errors.tail_file(RUNDIR / "stderr.log"),
+                tmux_srv=client.tmux_srv,
+            )
+        elif _eof and not turn.turn_done:
             # stdout fechou sem o evento 'result': o processo morreu no meio do
             # turno. Sem isso o turno só voltava ao prompt, mudo.
-            _rc = proc.poll()
-            _stderr_tail = _tail_file(RUNDIR / "stderr.log")
             errors.report(
                 "claude", "o processo `claude` terminou no meio do turno",
-                severity="fatal", code="claude_process_died",
-                detail=f"exit code: {_rc}\n{_stderr_tail}".strip(),
+                severity="fatal", code="process_died",
+                detail=errors.process_diagnostics(proc.poll(), RUNDIR / "stderr.log"),
                 tmux_srv=client.tmux_srv,
             )
 
