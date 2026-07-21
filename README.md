@@ -16,6 +16,8 @@ Instead of asking the agent to be more autonomous, it asks a simpler question:
 
 > **What is the agent actually doing right now?**
 
+![Frollo terminal interface showing editor, chat, thinking, stats and tools panes](docs/assets/readme/frollo-live-observability.png)
+
 ---
 
 ## What is Frollo?
@@ -47,6 +49,20 @@ Think of it as somewhere between:
 * **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
 * **Session picker** — resume any previous session interactively.
 * **Experimental Codex backend** — run the same terminal interface against `codex app-server` with `--backend codex`.
+
+## In Action
+
+The interface is split into live panes: chat output, thinking/reasoning, tool execution, session statistics and the editor itself.
+
+![Frollo stats and tool panes showing command execution, context usage and quota](docs/assets/readme/frollo-stats-tools.png)
+
+Agents can read, edit and test while Frollo keeps the activity visible in real time.
+
+![Frollo showing an agent-created file, reasoning pane, stats and test output](docs/assets/readme/frollo-agent-edit.png)
+
+The thinking pane gives long-running turns a shape you can follow instead of hiding them behind a spinner.
+
+![Frollo thinking pane showing the agent reviewing pending changes before a commit](docs/assets/readme/frollo-thinking-pane.png)
 
 ---
 
