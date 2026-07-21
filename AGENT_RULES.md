@@ -117,6 +117,17 @@ junto da estrada.
 | `FROLLO.md` | Arquitetura, decisoes tecnicas, ultimas features, contratos internos |
 | `AGENT_RULES.md` | Modo de trabalho dos agentes |
 | `CLAUDE.md` | Ponteiros para documentos que o agente deve ler |
+| `.codex/config.toml` | Adaptador de configuracao do Codex para ler a documentacao canonica |
+
+### Documentacao canonica de agentes
+
+Evite duplicar o mesmo conteudo em arquivos especificos de agentes. A fonte canonica do projeto e
+`FROLLO.md`; arquivos como `CLAUDE.md`, `.codex/config.toml` ou futuros adaptadores devem apenas
+ensinar cada ferramenta a encontrar essa fonte.
+
+Quando um novo backend de agente estiver nascendo, use o agente nativo dele ate o primeiro MVP
+funcional. Depois que `frollo --backend <nome>` conseguir conduzir turnos reais, prefira dogfooding
+pelo proprio Frollo e use o agente nativo como escape hatch de depuracao.
 
 ## Design
 

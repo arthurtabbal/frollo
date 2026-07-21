@@ -1,0 +1,8 @@
+# Codex project adapter.
+#
+# FROLLO.md is the canonical project guidance. Do not duplicate it into
+# AGENTS.md; keep per-agent files as small adapters that point to the shared
+# documentation.
+
+project_doc_fallback_filenames = ["FROLLO.md"]
+project_doc_max_bytes = 65536

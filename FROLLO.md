@@ -1,6 +1,7 @@
 # FROLLO.md
 
-Documentação do projeto para Claude Code. Todo Claude que trabalhar neste repositório deve ler este arquivo.
+Documentação canônica do projeto para agentes. Todo agente que trabalhar neste repositório deve ler
+este arquivo e também `AGENT_RULES.md` antes de fazer mudanças.
 
 ## O que é este projeto
 
@@ -67,6 +68,28 @@ Usuário digita no chat.py
         → /tmp/claude-client/tools (tool calls com typewriter nas gárgulas)
         → /tmp/claude-client/thinking (thinking/reasoning com typewriter)
 ```
+
+### Estratégia de agentes e backends
+
+`FROLLO.md` é a fonte única de verdade para contexto de projeto. Arquivos específicos de agente são
+adaptadores, não cópias:
+
+- `CLAUDE.md` aponta para `FROLLO.md` e `AGENT_RULES.md`.
+- `.codex/config.toml` faz o Codex tratar `FROLLO.md` como fallback de instruções do projeto.
+- Novos agentes devem ganhar apenas o mínimo de configuração necessário para encontrar a documentação
+  canônica.
+
+Para backends, siga o padrão de bootstrap nativo:
+
+1. Enquanto um backend ainda não tem MVP funcional no Frollo, desenvolva a integração usando o agente
+   nativo desse backend.
+2. Depois que `frollo --backend <nome>` conseguir rodar um primeiro turno real, prefira dogfooding pelo
+   próprio Frollo.
+3. Mantenha o agente nativo como escape hatch para depurar o backend quando o adapter quebrar.
+
+Essa regra é deliberada: o Frollo não deve fingir que todos os agentes são iguais antes de observar
+como cada um trabalha. Cada backend ensina a interface que merece; o protocolo comum vem depois da
+observação, não antes.
 
 **Decisões de arquitetura:**
 
