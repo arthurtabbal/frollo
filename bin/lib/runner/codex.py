@@ -59,6 +59,10 @@ _LIVE_PROGRESS_MAX_FRAMES = 24
 _LIVE_PROGRESS_REPLAY_DELAY = 0.04
 
 
+def _codex_file_tool_name(operation):
+    return "Write" if operation == "add" else "Edit"
+
+
 def _clean_terminal_line(line):
     line = _ANSI_RE.sub("", line).strip()
     return _CONTROL_RE.sub("", line)
@@ -871,7 +875,9 @@ class _CodexRenderer:
             file_payload = payload.get("file") or {}
             path = file_payload.get("path") or ""
             diff = file_payload.get("diff") or ""
-            log_tool_call({"name": "Edit", "input": {"file_path": path, "old_string": ""}},
+            operation = file_payload.get("operation")
+            tool_name = _codex_file_tool_name(operation)
+            log_tool_call({"name": tool_name, "input": {"file_path": path, "old_string": "", "diff": diff}},
                           self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, self.render)
             if diff:
                 log_tool_result({"content": diff})

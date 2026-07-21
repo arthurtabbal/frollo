@@ -113,6 +113,53 @@ class TestCondicoesBloqueantes:
         mock_system.assert_not_called()
 
 
+# ── Bash que lê arquivo também pode disparar jump ─────────────────────────────
+
+
+class TestBashReadJump:
+    def test_cat_abre_primeiro_arquivo_existente(self, tmp_path, mock_system):
+        fp = tmp_path / "main.py"
+        fp.write_text("print('oi')\n")
+
+        log_tool_call(_bash(f"cat {fp}"), nvim_pane="pane_id", editor_bin="nvim")
+
+        mock_system.assert_called_once()
+        assert str(fp) in mock_system.call_args[0][0]
+
+    def test_sed_abre_na_linha_do_intervalo(self, tmp_path, mock_system):
+        fp = tmp_path / "README.md"
+        fp.write_text("um\ndois\ntres\n")
+
+        log_tool_call(_bash(f"sed -n '2,3p' {fp}"), nvim_pane="pane_id", editor_bin="nvim")
+
+        cmd = mock_system.call_args[0][0]
+        assert str(fp) in cmd
+        assert "+2" in cmd
+
+    def test_pipeline_nl_sed_abre_arquivo_da_primeira_etapa(self, tmp_path, mock_system):
+        fp = tmp_path / "tools.py"
+        fp.write_text("a\nb\n")
+
+        log_tool_call(_bash(f"nl -ba {fp} | sed -n '1,80p'"), nvim_pane="pane_id", editor_bin="nvim")
+
+        mock_system.assert_called_once()
+        assert str(fp) in mock_system.call_args[0][0]
+
+    def test_pipeline_nl_sed_abre_na_linha_do_filtro(self, tmp_path, mock_system):
+        fp = tmp_path / "tools.py"
+        fp.write_text("\n".join(str(n) for n in range(60)))
+
+        log_tool_call(_bash(f"nl -ba {fp} | sed -n '37,44p'"), nvim_pane="pane_id", editor_bin="nvim")
+
+        cmd = mock_system.call_args[0][0]
+        assert str(fp) in cmd
+        assert "+37" in cmd
+
+    def test_bash_que_nao_le_arquivo_continua_sem_jump(self, mock_system):
+        log_tool_call(_bash("rg --files | head -40"), nvim_pane="pane_id", editor_bin="nvim")
+        mock_system.assert_not_called()
+
+
 # ── conteúdo do comando tmux ──────────────────────────────────────────────────
 
 
@@ -133,6 +180,31 @@ class TestComandoTmux:
         monkeypatch.setattr("lib.tools._find_edit_line", lambda *a: 42)
         log_tool_call(_edit(old_string="algo"), nvim_pane="pane_id", editor_bin="nvim")
         assert "+42" in mock_system.call_args[0][0]
+
+    def test_edit_com_diff_abre_na_primeira_linha_nova(self, tmp_path, mock_system):
+        fp = tmp_path / "main.py"
+        fp.write_text("\n".join(str(n) for n in range(80)))
+        diff = "@@ -30,6 +37,9 @@\n old\n+new\n"
+
+        log_tool_call(
+            {"name": "Edit", "input": {"file_path": str(fp), "old_string": "", "diff": diff}},
+            nvim_pane="pane_id",
+            editor_bin="nvim",
+        )
+
+        assert "+37" in mock_system.call_args[0][0]
+
+    def test_write_com_diff_abre_na_primeira_linha_nova(self, tmp_path, mock_system):
+        fp = tmp_path / "new.py"
+        diff = "@@ -0,0 +12,3 @@\n+novo\n"
+
+        log_tool_call(
+            {"name": "Write", "input": {"file_path": str(fp), "diff": diff}},
+            nvim_pane="pane_id",
+            editor_bin="nvim",
+        )
+
+        assert "+12" in mock_system.call_args[0][0]
 
     def test_sem_linha_nao_inclui_mais(self, mock_system):
         log_tool_call(_edit(), nvim_pane="pane_id", editor_bin="nvim")

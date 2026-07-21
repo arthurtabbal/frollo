@@ -485,6 +485,44 @@ class TestCodexRenderer:
 
         mock_result.assert_called_once_with({"content": "frollo-progress 10%\nfrollo-progress 25%"})
 
+    def test_file_change_add_renderiza_como_write(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_call") as mock_call:
+            renderer.handle({
+                "kind": "file.change.finished",
+                "payload": {
+                    "file": {
+                        "path": "/repo/novo.md",
+                        "operation": "add",
+                        "diff": "",
+                    },
+                },
+                "provider": {},
+            })
+
+        assert mock_call.call_args.args[0]["name"] == "Write"
+        assert mock_call.call_args.args[0]["input"]["file_path"] == "/repo/novo.md"
+
+    def test_file_change_modify_renderiza_como_edit(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_call") as mock_call:
+            renderer.handle({
+                "kind": "file.change.finished",
+                "payload": {
+                    "file": {
+                        "path": "/repo/existente.md",
+                        "operation": "modify",
+                        "diff": "",
+                    },
+                },
+                "provider": {},
+            })
+
+        assert mock_call.call_args.args[0]["name"] == "Edit"
+        assert mock_call.call_args.args[0]["input"]["file_path"] == "/repo/existente.md"
+
     def test_reasoning_vazio_escreve_fallback_no_thinking(self):
         renderer, render = self._renderer()
 

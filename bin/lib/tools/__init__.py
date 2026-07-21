@@ -5,7 +5,7 @@ from ..gargulas import _gargula_comment
 from .. import config
 
 from .display import RUNDIR, TOOLS_LOG, _ts, _log, _entry, _shorten_path, _clear_tools_pane, _MAX_DISPLAY
-from .nvim import _nvim_open, _find_edit_line
+from .nvim import _nvim_open, _find_edit_line, _bash_read_target, _diff_first_new_line
 
 def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin="", render=None):
     _clear_tools_pane()
@@ -13,8 +13,12 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin="", render=None):
     inp  = block.get("input", {})
 
     if name == "Bash":
-        raw = inp.get("description") or inp.get("command", "").replace("\n", " ")
+        command = inp.get("command", "")
+        raw = inp.get("description") or command.replace("\n", " ")
         _entry(TOOLS_BASH, "⚡", raw if len(raw) <= _MAX_DISPLAY else raw[:_MAX_DISPLAY - 1] + "…")
+        fp, line = _bash_read_target(command)
+        if fp:
+            _nvim_open(fp, f"+{line} " if line else "", nvim_pane, tmux_srv, editor_bin)
 
     elif name in ("Read", "Glob"):
         fp     = inp.get("file_path", inp.get("pattern", ""))
@@ -28,14 +32,15 @@ def log_tool_call(block, nvim_pane="", tmux_srv="", editor_bin="", render=None):
         old = inp.get("old_string", "").strip().replace("\n", " ")
         preview = f"  {DIM}{old[:40]}{'…' if len(old) > 40 else ''}{RESET}" if old else ""
         _entry(TOOLS_EDIT, "✎", _shorten_path(fp) + preview)
-        line = _find_edit_line(fp, inp.get("old_string", ""))
+        line = inp.get("line") or _diff_first_new_line(inp.get("diff")) or _find_edit_line(fp, inp.get("old_string", ""))
         _nvim_open(fp, f"+{line} " if line else "", nvim_pane, tmux_srv, editor_bin)
 
     elif name == "Write":
         fp     = inp.get("file_path", "")
         suffix = f"  {DIM}(sobrescreve){RESET}" if os.path.isfile(fp) else ""
         _entry(TOOLS_WRITE, "◆", _shorten_path(fp) + suffix)
-        _nvim_open(fp, "", nvim_pane, tmux_srv, editor_bin)
+        line = inp.get("line") or _diff_first_new_line(inp.get("diff"))
+        _nvim_open(fp, f"+{line} " if line else "", nvim_pane, tmux_srv, editor_bin)
 
     elif name == "Grep":
         fp      = inp.get("path", "")
