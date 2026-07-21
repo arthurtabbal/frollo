@@ -33,6 +33,7 @@ from .text import reset_col
 
 
 _CODEX_REASONING_SUMMARY = "detailed"
+_CODEX_REASONING_EFFORT = "high"
 _CODEX_DONE_DRAIN_GRACE = 0.35
 # Teto de ociosidade, não de duração: um turno longo que segue emitindo eventos
 # nunca é cortado; 120s de silêncio absoluto é que viram falha explícita.
@@ -250,6 +251,18 @@ def _text_from_parts(parts):
     return "\n".join(_text_part_texts(parts))
 
 
+def _codex_web_search_query(item):
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    queries = action.get("queries") or []
+    if item.get("query"):
+        return item.get("query")
+    if action.get("query"):
+        return action.get("query")
+    if queries:
+        return queries[0]
+    return ""
+
+
 def _text_part_texts(parts):
     if not parts:
         return []
@@ -299,6 +312,7 @@ def _codex_turn_start_params(thread_id, message, images=None):
         "threadId": thread_id,
         "approvalPolicy": "never",
         "sandboxPolicy": {"type": "dangerFullAccess"},
+        "effort": _CODEX_REASONING_EFFORT,
         "summary": _CODEX_REASONING_SUMMARY,
         "input": _codex_input_items(message, images=images),
     }
@@ -715,6 +729,14 @@ class _CodexAdapter:
                     "operation": (first.get("kind") or {}).get("type", "unknown"),
                 }
             }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
+        if typ == "webSearch":
+            query = _codex_web_search_query(item)
+            if not query:
+                return []
+            return [self.event("web.search.started", {
+                "status": item.get("status") or "in_progress",
+                "web_search": {"query": query},
+            }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         return self._unknown_item(item, "item/started", raw)
 
     def _unknown_item(self, item, phase, raw):
@@ -783,6 +805,16 @@ class _CodexAdapter:
                     }
                 }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw))
             return events
+        if typ == "webSearch":
+            action = item.get("action") if isinstance(item.get("action"), dict) else {}
+            return [self.event("web.search.finished", {
+                "status": item.get("status") or "completed",
+                "web_search": {
+                    "query": _codex_web_search_query(item),
+                    "queries": action.get("queries") or [],
+                    "action": action.get("type"),
+                },
+            }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         return self._unknown_item(item, "item/completed", raw)
 
 
@@ -815,9 +847,11 @@ class _CodexRenderer:
         self.reasoning_open_entry_items = set()
         self.reasoning_finished_items = set()
         self.reasoning_items_with_text = set()
+        self.reasoning_items_with_content_text = set()
         self.command_output_buffers = {}
         self.command_live_progress = set()
         self.command_live_progress_last = {}
+        self.web_search_logged = set()
         self.assistant_text = AssistantTextRenderer(client, cfg, render)
 
     def show_status(self):
@@ -844,6 +878,18 @@ class _CodexRenderer:
         if item_id:
             return item_id in self.reasoning_open_entry_items
         return "__anon__" in self.reasoning_open_entry_items
+
+    def _reasoning_item_key(self, item_id=None):
+        return item_id or "__anon__"
+
+    def _reasoning_has_text(self, item_id=None):
+        if item_id:
+            return item_id in self.reasoning_items_with_text
+        return bool(self.reasoning_items_with_text)
+
+    def _reasoning_has_content_text(self, item_id=None):
+        key = self._reasoning_item_key(item_id)
+        return key in self.reasoning_items_with_content_text
 
     def _open_thinking(self, item_id=None, force_new=False):
         entry_key = item_id or "__anon__"
@@ -872,24 +918,35 @@ class _CodexRenderer:
         self.reasoning_open = True
         if item_id:
             self.reasoning_open_items.add(item_id)
-        parts = payload.get("summary_parts") or payload.get("content_parts") or []
-        if parts:
-            self._push_reasoning_parts(parts, item_id, close_entries=True)
+        content_parts = payload.get("content_parts") or []
+        summary_parts = payload.get("summary_parts") or []
+        if content_parts:
+            self._push_reasoning_parts(content_parts, item_id, visibility="text", close_entries=True)
             return
-        text = payload.get("summary_text") or payload.get("content_text") or ""
-        if text:
-            self._push_reasoning_text(text, item_id, close_entry=True)
+        if summary_parts:
+            self._push_reasoning_parts(summary_parts, item_id, visibility="summary", close_entries=True)
+            return
+        content_text = payload.get("content_text") or ""
+        summary_text = payload.get("summary_text") or ""
+        if content_text:
+            self._push_reasoning_text(content_text, item_id, visibility="text", close_entry=True)
+        elif summary_text:
+            self._push_reasoning_text(summary_text, item_id, visibility="summary", close_entry=True)
 
-    def _push_reasoning_parts(self, parts, item_id=None, close_entries=False):
+    def _push_reasoning_parts(self, parts, item_id=None, visibility=None, close_entries=False):
         for text in parts:
-            self._push_reasoning_text(text, item_id, force_new=True, close_entry=close_entries)
+            self._push_reasoning_text(
+                text, item_id, visibility=visibility, force_new=True, close_entry=close_entries,
+            )
 
-    def _push_reasoning_text(self, text, item_id=None, force_new=False, close_entry=False):
+    def _push_reasoning_text(self, text, item_id=None, visibility=None, force_new=False, close_entry=False):
         if not text:
             return
         self._open_thinking(item_id, force_new=force_new)
-        if item_id:
-            self.reasoning_items_with_text.add(item_id)
+        key = self._reasoning_item_key(item_id)
+        self.reasoning_items_with_text.add(key)
+        if visibility == "text":
+            self.reasoning_items_with_content_text.add(key)
         self.render.push_file(
             THINKING_LOG,
             text,
@@ -902,16 +959,23 @@ class _CodexRenderer:
     def _finish_reasoning(self, payload, item_id=None):
         if item_id and item_id in self.reasoning_finished_items:
             return
-        parts = payload.get("summary_parts") or payload.get("content_parts") or []
-        text = payload.get("summary_text") or payload.get("content_text") or ""
-        item_has_text = bool(item_id and item_id in self.reasoning_items_with_text)
-        if item_id is None:
-            item_has_text = bool(self.reasoning_items_with_text)
-        if parts and not item_has_text:
-            self._push_reasoning_parts(parts, item_id, close_entries=True)
+        content_parts = payload.get("content_parts") or []
+        summary_parts = payload.get("summary_parts") or []
+        content_text = payload.get("content_text") or ""
+        summary_text = payload.get("summary_text") or ""
+        item_has_text = self._reasoning_has_text(item_id)
+        item_has_content = self._reasoning_has_content_text(item_id)
+        if content_parts and not item_has_content:
+            self._push_reasoning_parts(content_parts, item_id, visibility="text", close_entries=True)
             item_has_text = True
-        elif text and not item_has_text:
-            self._push_reasoning_text(text, item_id, close_entry=True)
+        elif content_text and not item_has_content:
+            self._push_reasoning_text(content_text, item_id, visibility="text", close_entry=True)
+            item_has_text = True
+        elif summary_parts and not item_has_text:
+            self._push_reasoning_parts(summary_parts, item_id, visibility="summary", close_entries=True)
+            item_has_text = True
+        elif summary_text and not item_has_text:
+            self._push_reasoning_text(summary_text, item_id, visibility="summary", close_entry=True)
             item_has_text = True
         elif not item_has_text and not self._reasoning_entry_is_open(item_id):
             self._open_thinking(item_id)
@@ -997,6 +1061,15 @@ class _CodexRenderer:
                           self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, self.render)
             if diff:
                 log_tool_result({"content": diff})
+        elif kind in ("web.search.started", "web.search.finished"):
+            item_id = event.get("item_id")
+            key = item_id or payload.get("web_search", {}).get("query") or "__current__"
+            if kind == "web.search.finished" and key in self.web_search_logged:
+                return None
+            query = (payload.get("web_search") or {}).get("query") or "WebSearch"
+            log_tool_call({"name": "WebSearch", "input": {"query": query}},
+                          self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, self.render)
+            self.web_search_logged.add(key)
         elif kind == "reasoning.started":
             self._start_reasoning(payload, event.get("item_id"))
         elif kind == "reasoning.summary.started":
@@ -1006,7 +1079,9 @@ class _CodexRenderer:
                 self.reasoning_open_items.add(item_id)
             self._open_thinking(item_id, force_new=True)
         elif kind == "reasoning.delta":
-            self._push_reasoning_text(payload.get("delta", ""), event.get("item_id"))
+            self._push_reasoning_text(
+                payload.get("delta", ""), event.get("item_id"), visibility=payload.get("visibility"),
+            )
         elif kind == "reasoning.completed":
             self._finish_reasoning(payload, event.get("item_id"))
         elif kind == "usage.updated":

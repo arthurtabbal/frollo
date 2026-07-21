@@ -85,10 +85,11 @@ class TestCodexAdapter:
 
         assert _codex_preferred_command_output(output, buffered) == buffered
 
-    def test_turn_start_params_forcam_summary_detailed(self):
+    def test_turn_start_params_forcam_reasoning_alto_e_summary_detailed(self):
         params = _codex_turn_start_params("thread-1", "oi")
 
         assert params["threadId"] == "thread-1"
+        assert params["effort"] == "high"
         assert params["summary"] == "detailed"
         assert params["input"] == [{"type": "text", "text": "oi"}]
 
@@ -239,6 +240,48 @@ class TestCodexAdapter:
             "method": "item/completed",
             "params": {"turnId": "turn-1", "item": {"type": "userMessage", "id": "user-1"}},
         }) == []
+
+    def test_mapeia_web_search_sem_warning_de_item_desconhecido(self):
+        adapter = _adapter()
+        adapter.session_id = "thread-1"
+        adapter.turn_id = "turn-1"
+
+        assert adapter.normalize({
+            "method": "item/started",
+            "params": {
+                "turnId": "turn-1",
+                "item": {
+                    "type": "webSearch",
+                    "id": "ws-1",
+                    "query": "",
+                    "action": {"type": "other"},
+                },
+            },
+        }) == []
+
+        events = adapter.normalize({
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn-1",
+                "item": {
+                    "type": "webSearch",
+                    "id": "ws-1",
+                    "query": "site:example.com frollo",
+                    "action": {
+                        "type": "search",
+                        "query": "site:example.com frollo",
+                        "queries": ["site:example.com frollo", "frollo observer"],
+                    },
+                },
+            },
+        })
+
+        assert events[0]["kind"] == "web.search.finished"
+        assert events[0]["payload"]["web_search"]["query"] == "site:example.com frollo"
+        assert events[0]["payload"]["web_search"]["queries"] == [
+            "site:example.com frollo",
+            "frollo observer",
+        ]
 
     def test_mapeia_reasoning_delta_e_completion(self):
         adapter = _adapter()
@@ -548,6 +591,39 @@ class TestCodexRenderer:
         assert mock_call.call_args.args[0]["name"] == "Edit"
         assert mock_call.call_args.args[0]["input"]["file_path"] == "/repo/existente.md"
 
+    def test_web_search_renderiza_no_pane_de_tools(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_call") as mock_call:
+            renderer.handle({
+                "kind": "web.search.finished",
+                "item_id": "ws-1",
+                "payload": {"web_search": {"query": "site:example.com frollo"}},
+                "provider": {},
+            })
+
+        assert mock_call.call_args.args[0]["name"] == "WebSearch"
+        assert mock_call.call_args.args[0]["input"]["query"] == "site:example.com frollo"
+
+    def test_web_search_started_e_completed_nao_duplicam_linha(self):
+        renderer, _ = self._renderer()
+
+        with patch("lib.runner.codex.log_tool_call") as mock_call:
+            renderer.handle({
+                "kind": "web.search.started",
+                "item_id": "ws-1",
+                "payload": {"web_search": {"query": "site:example.com frollo"}},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "web.search.finished",
+                "item_id": "ws-1",
+                "payload": {"web_search": {"query": "site:example.com frollo"}},
+                "provider": {},
+            })
+
+        assert mock_call.call_count == 1
+
     def test_reasoning_vazio_escreve_fallback_no_thinking(self):
         renderer, render = self._renderer()
 
@@ -642,6 +718,54 @@ class TestCodexRenderer:
         headers = [call.args[1] for call in mock_log.call_args_list if "\033[40m" in call.args[1]]
         assert pushed == ["**Compondo resposta**", "**Resumo final**"]
         assert len(headers) == 2
+
+    def test_reasoning_completed_prefere_content_ao_summary(self):
+        renderer, render = self._renderer()
+
+        renderer.handle({
+            "kind": "reasoning.completed",
+            "item_id": "rs-1",
+            "payload": {
+                "summary_parts": ["**Lendo arquivos**"],
+                "summary_text": "**Lendo arquivos**",
+                "content_parts": ["linha interna 1", "linha interna 2"],
+                "content_text": "linha interna 1\nlinha interna 2",
+            },
+            "provider": {},
+        })
+
+        pushed = [call.args[1] for call in render.push_file.call_args_list]
+        assert pushed == ["linha interna 1", "linha interna 2"]
+
+    def test_reasoning_completed_acrescenta_content_apos_summary_streamado(self):
+        renderer, render = self._renderer()
+
+        renderer.handle({
+            "kind": "reasoning.summary.started",
+            "item_id": "rs-1",
+            "payload": {"summary_index": 0},
+            "provider": {},
+        })
+        renderer.handle({
+            "kind": "reasoning.delta",
+            "item_id": "rs-1",
+            "payload": {"delta": "**Lendo arquivos**", "visibility": "summary"},
+            "provider": {},
+        })
+        renderer.handle({
+            "kind": "reasoning.completed",
+            "item_id": "rs-1",
+            "payload": {
+                "summary_parts": ["**Lendo arquivos**"],
+                "summary_text": "**Lendo arquivos**",
+                "content_parts": ["raciocínio mais completo"],
+                "content_text": "raciocínio mais completo",
+            },
+            "provider": {},
+        })
+
+        pushed = [call.args[1] for call in render.push_file.call_args_list]
+        assert pushed == ["**Lendo arquivos**", "raciocínio mais completo"]
 
     def test_assistant_delta_de_novo_item_insere_quebra(self):
         renderer, render = self._renderer()

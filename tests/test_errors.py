@@ -198,7 +198,7 @@ class TestAdapterNuncaEngoleMensagem:
     def test_item_de_tipo_desconhecido_vira_notice(self):
         eventos = self._adapter().normalize({
             "method": "item/completed",
-            "params": {"item": {"id": "i1", "type": "webSearch"}},
+            "params": {"item": {"id": "i1", "type": "coisaNova"}},
         })
 
         assert eventos[0]["payload"]["notice"]["code"] == "unknown_item"
