@@ -215,6 +215,31 @@ class TestCodexAdapter:
         assert events[0]["kind"] == "notice"
         assert events[0]["payload"]["notice"]["code"] == "linux_sandbox_userns"
 
+    def test_ignora_notifications_benignas_de_estado(self):
+        adapter = _adapter()
+
+        for method in (
+            "remoteControl/status/changed",
+            "mcpServer/startupStatus/updated",
+            "thread/settings/updated",
+        ):
+            assert adapter.normalize({"method": method, "params": {}}) == []
+
+    def test_ciclo_de_mensagens_conhecidas_nao_vira_unknown_item(self):
+        adapter = _adapter()
+        adapter.session_id = "thread-1"
+        adapter.turn_id = "turn-1"
+
+        assert adapter.normalize({
+            "method": "item/started",
+            "params": {"turnId": "turn-1", "item": {"type": "agentMessage", "id": "msg-1"}},
+        }) == []
+
+        assert adapter.normalize({
+            "method": "item/completed",
+            "params": {"turnId": "turn-1", "item": {"type": "userMessage", "id": "user-1"}},
+        }) == []
+
     def test_mapeia_reasoning_delta_e_completion(self):
         adapter = _adapter()
         adapter.session_id = "thread-1"

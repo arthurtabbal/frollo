@@ -44,6 +44,11 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _CODEX_LINUX_SANDBOX_WARNING = (
     "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
+_CODEX_IGNORED_NOTIFICATIONS = {
+    "mcpServer/startupStatus/updated",
+    "remoteControl/status/changed",
+    "thread/settings/updated",
+}
 
 
 def _utc_now():
@@ -631,6 +636,8 @@ class _CodexAdapter:
             out.append(self.event("diff.updated", {
                 "diff": {"format": "unified", "snapshot": True, "diff": params.get("diff")}
             }, turn_id=params.get("turnId"), raw=msg))
+        elif method in _CODEX_IGNORED_NOTIFICATIONS:
+            pass
         elif method == "error":
             error = params.get("error") or params
             out.append(self.event("error", {
@@ -676,6 +683,8 @@ class _CodexAdapter:
             text = "".join(part.get("text", "") for part in item.get("content", []) if part.get("type") == "text")
             return [self.event("message.user", {"role": "user", "text": text},
                                turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
+        if typ == "agentMessage":
+            return []
         if typ == "commandExecution":
             return [self.event("command.started", {
                 "status": item.get("status"),
@@ -726,6 +735,8 @@ class _CodexAdapter:
 
     def _item_completed(self, item, params, raw):
         typ = item.get("type")
+        if typ == "userMessage":
+            return []
         if typ == "agentMessage":
             return [self.event("message.assistant.completed", {
                 "role": "assistant",
