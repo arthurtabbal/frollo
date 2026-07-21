@@ -24,6 +24,14 @@ from .turn import Turn
 
 from ..tools import RUNDIR, _ts
 from .. import config
+from .. import errors
+
+
+def _tail_file(path, lines=12):
+    try:
+        return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
 
 
 def _parse_rate_limit_line(raw):
@@ -169,10 +177,14 @@ def run_turn(client, message, images=None):
 
     try:
         proc, _reused = _ensure_proc(client, persistent)
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError) as exc:
+        errors.report(
+            "claude", "não foi possível iniciar o CLI `claude`",
+            severity="fatal", code="claude_spawn_failed", detail=str(exc),
+            tmux_srv=client.tmux_srv,
+        )
         sys.stdout.write(
-            f"\n{YELLOW}claude CLI não encontrado.{RESET}"
-            f" {DIM}Instale com: npm i -g @anthropic-ai/claude-code{RESET}\n"
+            f"{DIM}Instale com: npm i -g @anthropic-ai/claude-code{RESET}\n"
         )
         sys.stdout.flush()
         return False
@@ -255,6 +267,18 @@ def run_turn(client, message, images=None):
         # em ritmo normal e para a thread — só depois disso é seguro o main thread
         # voltar a escrever no stdout sozinho (checks abaixo).
         render.stop()
+
+        if _eof and not turn.turn_done:
+            # stdout fechou sem o evento 'result': o processo morreu no meio do
+            # turno. Sem isso o turno só voltava ao prompt, mudo.
+            _rc = proc.poll()
+            _stderr_tail = _tail_file(RUNDIR / "stderr.log")
+            errors.report(
+                "claude", "o processo `claude` terminou no meio do turno",
+                severity="fatal", code="claude_process_died",
+                detail=f"exit code: {_rc}\n{_stderr_tail}".strip(),
+                tmux_srv=client.tmux_srv,
+            )
 
         if turn.text_started and turn.spinner_shown:
             sys.stdout.write("\n")

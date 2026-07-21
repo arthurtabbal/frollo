@@ -41,6 +41,7 @@ from lib.runner import run_turn, _terminate_proc
 from lib.runner.capabilities import backend_names, backend_profile, supports
 from lib.runner.codex import run_codex_turn
 from lib import config as _config
+from lib import errors
 from lib.configure import run_configure
 from lib.usage import fetch_usage
 
@@ -285,8 +286,16 @@ class ClaudeClient:
 
         # ── atualizar cota em background ───────────────────────────────────
         def _bg():
-            result = fetch_usage()
+            try:
+                result = fetch_usage()
+            except Exception as exc:
+                errors.report_exception("frollo/cota", exc, severity="warning",
+                                        code="usage_fetch_failed", chat=False, tools=False)
+                return
             if not result:
+                errors.report("frollo/cota", "não foi possível ler a cota da assinatura",
+                              severity="warning", code="usage_unavailable",
+                              chat=False, tools=False)
                 return
             try:
                 fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
@@ -413,15 +422,15 @@ class ClaudeClient:
                 print(f"\n{DIM}saindo...{RESET}")
                 break
             except Exception as e:
-                import traceback
-                err = traceback.format_exc()
-                err_log = RUNDIR / "err.log"
-                with open(err_log, "a") as f:
-                    f.write(err)
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
                     self.proc.wait()
-                print(f"\n{YELLOW}erro inesperado (ver {err_log}):{RESET} {e}\n")
+                errors.report_exception(
+                    "frollo", e, severity="fatal", code="unexpected",
+                    tmux_srv=self.tmux_srv,
+                )
+                sys.stdout.write(f"{DIM}histórico completo em {errors.ERROR_LOG}{RESET}\n")
+                sys.stdout.flush()
                 continue
 
 

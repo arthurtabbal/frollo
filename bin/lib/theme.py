@@ -9,6 +9,7 @@ ITALIC = f"{E}[3m"
 # ── Paleta base (Nord + custom) ───────────────────────────
 GREEN  = f"{E}[38;5;108m"   # #a3be8c Nord14 sage
 YELLOW = f"{E}[38;5;222m"   # #ebcb8b Nord13 âmbar quente
+RED    = f"{E}[38;5;167m"   # #bf616a Nord11 — só para erro
 CYAN   = f"{E}[38;5;110m"   # #87afd7  frost blue
 BLUE   = f"{E}[38;5;67m"    # #5e81ac  Nord10 azul marinho
 PURPLE = f"{E}[38;5;60m"    # #5e517f  roxo custom
@@ -37,6 +38,8 @@ HEADER_TITLE    = CYAN         # "Claude Frollo Observer"
 HEADER_STONE    = f"{E}[38;5;241m"  # pedra clara — catedral
 HEADER_DARK     = f"{E}[38;5;238m"  # pedra escura — sombra
 HEADER_ROSE     = f"{E}[38;5;220m"  # rosácea — dourado
+ERROR_FG        = RED          # ✖ falha que o usuário precisa ver
+WARN_FG         = YELLOW       # ! degradação, não falha
 GARGOYLE_VICTOR = PURPLE
 GARGOYLE_HUGO   = GREEN
 GARGOYLE_GUDULE = f"{E}[38;5;103m"  # lilás acinzentado

@@ -19,6 +19,7 @@ from ..theme import (
 )
 from ..tools import log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
 from ..gargulas import _gargula_comment
+from .. import errors
 
 from .assistant_text import AssistantTextRenderer
 from .panes import THINKING_LOG, _resize_thinking
@@ -60,6 +61,7 @@ class Turn:
         self._suppress_perm_text = False
         self.perm_approved = False
         self.turn_done = False
+        self.unknown_event_types = set()
         self.rate_limited = False
         self.rate_limit_ts = 0.0
         self.rate_limit_retry = 0
@@ -123,9 +125,14 @@ class Turn:
             event = json.loads(raw)
         except json.JSONDecodeError:
             # stderr é um canal separado (_stderr_reader em run_turn) — uma linha
-            # não-JSON no stdout é anomalia, não caminho esperado.
-            with open(RUNDIR / "stdout-anomalies.log", "a") as _an:
-                _an.write(f"non-json: {raw}\n")
+            # não-JSON no stdout é anomalia, não caminho esperado. Vai pro pane de
+            # tools e pro errors.jsonl; fora do chat pra não picotar o texto do
+            # assistente com ruído que raramente é acionável na hora.
+            errors.report(
+                "claude/stdout", "linha não-JSON no stdout do claude",
+                severity="warning", code="non_json_stdout", detail=raw[:400],
+                tmux_srv=getattr(self.client, "tmux_srv", None), chat=False,
+            )
             return
         self.handle_event(event)
 
@@ -159,6 +166,15 @@ class Turn:
         elif etype not in ("system", None):
             with open(RUNDIR / "events.log", "a") as f:
                 f.write(json.dumps(event) + "\n")
+            if etype not in self.unknown_event_types:
+                # Lacuna de cobertura do protocolo, não falha do turno: fica no
+                # errors.jsonl (uma vez por tipo) sem gastar espaço de tela.
+                self.unknown_event_types.add(etype)
+                errors.report(
+                    "claude/protocolo", f"evento do stream-json não mapeado: {etype}",
+                    severity="warning", code="unknown_event_type", raw=event,
+                    chat=False, tools=False,
+                )
 
     # -- stream_event ---------------------------------------------------
 
@@ -309,6 +325,17 @@ class Turn:
         sid = event.get("session_id")
         if sid:
             self.client.session_id = sid
+        if event.get("is_error") or (event.get("subtype") or "success") != "success":
+            # O CLI encerra o turno com is_error/subtype quando a execução falhou
+            # (erro de API, tool travada, max_turns). Antes o turno simplesmente
+            # terminava sem texto e sem explicação.
+            self.render.join()
+            self._clear_status()
+            errors.report(
+                "claude", event.get("result") or "turno terminou com erro",
+                code=event.get("subtype"), raw=event,
+                tmux_srv=getattr(self.client, "tmux_srv", None), render=self.render,
+            )
         if "total_cost_usd" in event:
             self.result_cost = event["total_cost_usd"]
         _r_usage = event.get("usage")

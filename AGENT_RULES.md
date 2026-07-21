@@ -139,6 +139,11 @@ pelo proprio Frollo e use o agente nativo como escape hatch de depuracao.
 - Preserve o schema canonico `frollo.event.v0` em `bin/lib/runner/protocol.py`; mudancas no contrato
   pedem testes e documentacao.
 - Codigo de terminal/tmux deve ser cuidadoso com termios, PTYs, panes e subprocessos persistentes.
+- Erro nunca passa em silencio. Todo caminho de falha novo deve chamar `errors.report()`
+  (`bin/lib/errors.py`), que ja escreve no chat, no pane de tools e em `errors.jsonl`. `except: pass`,
+  `return []` para mensagem desconhecida e timeout mudo sao bug: o usuario fica olhando spinner sem
+  saber que quebrou. Se a falha for degradacao esperada, use `chat=False` — some da conversa, nunca
+  do log. Ver a secao `Erros nunca em silencio` em `FROLLO.md`.
 - Logs e snapshots podem conter comandos e contexto sensivel. Nao amplie a superficie de vazamento.
 - Evite refactors oportunistas. Se encontrar algo fora do escopo, mencione ou registre, mas nao
   misture sem necessidade.

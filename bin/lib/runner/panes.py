@@ -43,6 +43,35 @@ def _pane_resize(tmux_srv, pane_file, lines):
         pass
 
 
+def _pane_height(tmux_srv, pane_file):
+    try:
+        pane_id = pane_file.read_text().strip()
+    except OSError:
+        return 0
+    if not pane_id:
+        return 0
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", tmux_srv, "display-message", "-p", "-t", pane_id, "#{pane_height}"],
+            capture_output=True, text=True,
+        )
+        return int(r.stdout.strip())
+    except Exception:
+        return 0
+
+
+def _grow_tools(tmux_srv, lines):
+    """Cresce o pane de tools até caber `lines` — nunca encolhe.
+
+    Usado quando um erro precisa ser lido inteiro (ver lib/errors.py). O teto é
+    metade da janela: erro é importante, mas não come o chat."""
+    if not tmux_srv or not TOOLS_PANE.exists():
+        return
+    target = min(lines, max(6, int(_window_height(tmux_srv) * 0.5)))
+    if target > _pane_height(tmux_srv, TOOLS_PANE):
+        _pane_resize(tmux_srv, TOOLS_PANE, target)
+
+
 _STATS_LINES = 4  # keep in sync with frollo.sh _STATS_LINES
 
 

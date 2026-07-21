@@ -108,6 +108,9 @@ observação, não antes.
 - O loop principal do client usa `select` com timeout de 150ms — garante animação do spinner mesmo em silêncio entre eventos do subprocesso.
 - **Tools pane é limpo via PTY direto** (`/tmp/claude-client/tools_tty`, salvo pelo `frollo.sh`). Escrever `\033[2J\033[H` no arquivo não é confiável via `tail -f`; escrever no PTY funciona de forma determinística. O arquivo de tools é truncado a cada turno.
 - **Stdlib only — sem dependências pip.** Todo o código Python usa exclusivamente a biblioteca padrão. Esta é uma regra de segurança: pip é o principal vetor de supply chain attacks em Python. Qualquer feature que pareça exigir uma dep externa deve ser implementada com stdlib ou reconsiderada. `requirements.txt` não existe e não deve ser criado.
+- **Erro nunca é silencioso.** Todo caminho de falha passa por `lib/errors.py` (chat + pane de tools +
+  `errors.jsonl`). `except: pass` e `return []` em resposta a coisa que não se entendeu são bug, não
+  robustez — ver seção "Erros nunca em silêncio".
 - **Capabilities por backend** vivem em `lib/runner/capabilities.py`. A UI deve consultar flags (`model_selection`, `session_resume`, `cost_usage`, `reasoning_stream`, etc.) em vez de testar nomes de provedores sempre que estiver decidindo comportamento de interface.
 - **Schema canônico atual** vive em `lib/runner/protocol.py` como `frollo.event.v0`. O Codex já normaliza eventos para esse schema; o Claude ainda usa a máquina `Turn` diretamente, então a issue do protocolo segue parcial.
 
@@ -120,6 +123,39 @@ Stop:        hook_event_name, last_assistant_message, cwd
 ```
 
 `tool_response` (não `tool_output`) é o nome correto para PostToolUse.
+
+## Erros nunca em silêncio
+
+Regra do projeto, com testes que a defendem (`tests/test_errors.py`): **nenhum caminho de falha
+termina sem que o usuário veja**. Até jul/2026 o Frollo não tinha camada de erro nenhuma — falhas
+eram percebidas só pela interface (um turno que virava "pensando" infinito, texto que nunca chegava).
+
+Tudo passa por `errors.report()` (`lib/errors.py`), que faz três coisas de uma vez:
+
+1. appenda uma linha JSON em `~/.config/frollo/errors.jsonl` (override `$FROLLO_ERROR_LOG`;
+   rotaciona 1 geração a 2MB, como `hooks/log.sh`);
+2. escreve uma linha vermelha no chat — com `render.join()` antes, pra não cortar o typewriter;
+3. escreve o detalhe no pane de tools e **cresce o pane** (`_grow_tools`, teto de meia janela).
+
+`chat=False` é a única forma de não aparecer na conversa, reservada a degradação esperada (cota
+indisponível, evento de protocolo não mapeado) — e mesmo assim o arquivo registra. Severidades:
+`warning` (âmbar), `error` e `fatal` (vermelho, `theme.ERROR_FG`).
+
+Caminhos que estavam mudos e hoje reportam:
+
+| Caminho | Antes | Agora |
+|---|---|---|
+| Resposta JSON-RPC de erro do Codex | `normalize()` devolvia `[]` — o turno girava até o teto de 120s | evento `error` → chat + tools + log |
+| Linha não-JSON no stdout do app-server | virava `{"_raw": …}` e morria no raw log | evento `error` (`codex_non_json_line`) |
+| Request do servidor sem handler | ninguém respondia — **o Codex bloqueava esperando**, "pensando" infinito de verdade | `respond_error` com `-32601` + erro na tela |
+| Método/item do Codex não mapeado | `[]` | `notice` de warning, uma vez por método (dedupe em `adapter.unknown_methods`) |
+| Processo `codex`/`claude` morto no meio do turno | loop rodava até o teto sem mensagem | `turn.failed` + erro com exit code e tail do stderr |
+| Handshake (`initialize`/`thread/start`) falho | `TypeError` genérico ou timeout mudo | `_codex_await` aborta o turno explicando o motivo |
+| `result` do Claude com `is_error`/`subtype` | turno acabava sem texto e sem explicação | erro com a mensagem do CLI |
+| Teto de turno de 120s | corte de duração — matava turno longo saudável | `_codex_idle_timed_out`: 120s **sem nenhum evento**, com falha explícita |
+
+O teto virou ociosidade de propósito: um turno de 10 minutos que segue emitindo eventos é trabalho,
+não travamento. Só o silêncio absoluto é sintoma.
 
 ## Testes
 
@@ -146,6 +182,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | **Render desacoplado do loop de eventos** | `lib/runner/turn.py`, `lib/runner/render.py` | Fase 3 do plano: `run_turn` foi partido em `Turn` (máquina de estados do turno, `handle_line` por tipo de evento) + `RenderQueue` (fila única que roda o typewriter numa thread própria). O loop de ingestão em `run_turn` só lê `proc.stdout` e despacha pro `Turn`, nunca mais dorme por animação — resolve o backpressure que travava o CLI quando o modelo produzia mais rápido que o typewriter consumia |
 | **Processo `claude` persistente** | `lib/runner/__init__.py` (`_ensure_proc`/`_terminate_proc`), `lib/config.py` (`persistent`) | Atrás da flag `persistent: true` (default `false`): reaproveita o mesmo processo `claude --input-format stream-json` entre turnos em vez de respawnar com `--resume` a cada um — elimina o cold-start + reload do transcript, que crescia com o tamanho da sessão. Troca de `/model`/modo mata e respawna (`_terminate_proc`, com `SIGKILL` de reserva — o processo não sai sozinho ao fechar stdin, achado do spike de protocolo). `/refresh`, `/new` e Ctrl+D também chamam `_terminate_proc` antes do `execvp`/saída, pra não deixar processo órfão |
 | **`--thinking-display summarized` forçado no spawn** | `lib/runner/__init__.py:124` | A Anthropic mudou (jul/2026) o default de `thinking.display` na API para `"omitted"` em modelos novos (Sonnet 5, Opus 4.8/4.7) — antes era `"summarized"`. Isso quebrou o pane de thinking pro Sonnet (só Haiku 4.5 continuou mostrando, por não estar nessa leva). Investigado via engenharia reversa do binário `claude` (2.1.201): em modo `--print` + `--output-format stream-json`, o CLI **não** seta um display explícito por conta própria (`showThinkingSummaries` do settings.json só se aplica em modo interativo) — então herda o default da API, que agora é omitted. Achamos uma flag oculta (`.hideHelp()`, não aparece em `--help`, e segue oculta no `claude` 2.1.215, mas funcional): `--thinking-display <summarized\|omitted>`. Setá-la explicitamente no spawn também marca a sessão como "display explícito" internamente, o que evita o CLI reforçar `omitted` de volta em sessões não-interativas. Adicionada incondicionalmente no `cmd` de `_ensure_proc` — restaura o thinking do Sonnet sem depender do default (instável) da API |
+| **Tratamento de erros** | `lib/errors.py`, `lib/runner/panes.py` (`_grow_tools`) | Sink único: todo caminho de falha chama `errors.report()`, que appenda em `~/.config/frollo/errors.jsonl`, escreve linha no chat e detalha no pane de tools (que **cresce** até caber, teto de meia janela). Fechou os buracos que faziam turno virar spinner infinito — ver seção "Erros nunca em silêncio" |
 | **Backend Codex App Server** | `lib/runner/codex.py`, `lib/runner/protocol.py`, `lib/runner/capabilities.py` | `frollo --backend codex` inicia `codex app-server`, cria thread, envia `turn/start` e traduz mensagens, reasoning, comandos, diffs, approvals, uso e cota para eventos `frollo.event.v0`. É experimental, mas real: o processo Codex é persistente durante a sessão do client. Limites atuais ficam declarados por capability: sem `/model`, sem `--resume`/`/refresh`, sem custo por turno. |
 
 ## Módulos (bin/)
@@ -166,6 +203,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `lib/runner/permissions.py` | ~155 | 3 protocolos de permissão (control_request, permission_request, fallback allowlist) |
 | `lib/runner/stats.py` | ~140 | Preços/modelo, `_ctx_bar`, `_model_ctx_window`, e os `_render_*` compartilhados do stats pane (turno/sessão/ctx/cota) |
 | `lib/runner/text.py` | ~60 | `_typewrite` no stdout: soft-wrap (terminal), cursor, skip por tecla; `col_is_mid_line`/`_advance_col` (posição pra `RenderQueue`) |
+| `lib/errors.py` | ~160 | Sink único de erros: `record`/`log`/`chat_lines`/`tools_text`/`report`/`report_exception`. Nada aqui levanta exceção |
 | `lib/usage.py` | ~120 | `fetch_usage()`: `GET /api/oauth/usage` via `urllib` (stdlib), Bearer do accessToken OAuth; parseia `limits[]` + chaves legadas de cota |
 | `lib/tools/__init__.py` | ~100 | `log_tool_call`/`log_tool_result` no pane de tools, dispatch por ferramenta |
 | `lib/tools/display.py` | ~51 | Escrita no log/PTY do pane de tools, `_shorten_path`, `_entry` |

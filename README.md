@@ -47,6 +47,7 @@ Think of it as somewhere between:
 * **Passive observer** — a system-wide hook captures every Claude Code session on the machine into an append-only JSONL event log; `observe.sh` tails and renders the stream.
 * **Typewriter pacing** — output is paced so you can follow the agent in real time instead of staring at a spinner and then receiving a wall of text. Any keypress skips ahead.
 * **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
+* **Loud failures** — errors never die quietly: they land in the chat, expand the tools pane with the details, and append to `~/.config/frollo/errors.jsonl`.
 * **Session picker** — resume any previous session interactively.
 * **Experimental Codex backend** — run the same terminal interface against `codex app-server` with `--backend codex`.
 
