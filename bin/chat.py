@@ -5,9 +5,11 @@ Consome stream-json e roteia eventos para panes tmux via arquivos de log.
 """
 
 import os
+import json
 import re
 import subprocess
 import sys
+import threading
 import time
 import random
 from enum import Enum
@@ -48,6 +50,7 @@ from lib.usage import fetch_usage
 RUNDIR       = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 THINKING_LOG = RUNDIR / "thinking"
 TOOLS_LOG    = RUNDIR / "tools"
+USAGE_REFRESH_SECONDS = 30.0
 
 
 class Mode(Enum):
@@ -73,6 +76,9 @@ class ClaudeClient:
         self.editor_bin = os.environ.get("CLAUDE_EDITOR_BIN", "")
         self.proc = None
         self._streaming_text = False  # True enquanto typewriter está ativo
+        self._usage_thread = None
+        self._codex_usage_thread = None
+        self._usage_errors_seen = set()
 
         RUNDIR.mkdir(exist_ok=True)
         THINKING_LOG.write_text("")
@@ -90,6 +96,160 @@ class ClaudeClient:
 
     def _supports(self, capability):
         return supports(self._backend_profile(), capability)
+
+    def _stats_tty(self):
+        stats_tty_file = RUNDIR / "stats_tty"
+        if not stats_tty_file.exists():
+            return ""
+        try:
+            return stats_tty_file.read_text().strip()
+        except OSError:
+            return ""
+
+    def _quota_file(self):
+        return _config.CONFIG_PATH.parent / "last_quota.json"
+
+    def _load_cached_usage(self):
+        if getattr(self, "_usage_cache_loaded", False):
+            return getattr(self, "_last_usage", None)
+        self._usage_cache_loaded = True
+        quota_file = self._quota_file()
+        try:
+            usage = json.loads(quota_file.read_text())
+            if usage:
+                self._last_usage = usage
+                self._last_usage_at = quota_file.stat().st_mtime
+        except (OSError, ValueError, TypeError):
+            pass
+        return getattr(self, "_last_usage", None)
+
+    def _store_usage(self, usage):
+        if not usage:
+            return
+        self._last_usage = usage
+        self._last_usage_at = time.time()
+        try:
+            quota_file = self._quota_file()
+            quota_file.parent.mkdir(parents=True, exist_ok=True)
+            quota_file.write_text(json.dumps(usage))
+        except OSError:
+            pass
+
+    def _write_quota_line(self, usage=None):
+        from lib.runner.stats import _render_quota_line
+
+        stats_tty = self._stats_tty()
+        if not stats_tty:
+            return
+        if usage is None:
+            usage = getattr(self, "_last_usage", None)
+        try:
+            fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
+            os.write(fd, ("\033[4;1H" + _render_quota_line(usage)).encode())
+            os.close(fd)
+        except OSError:
+            pass
+
+    def _fetch_usage_once(self):
+        try:
+            result = fetch_usage()
+        except Exception as exc:
+            errors.report_once(
+                self._usage_errors_seen, "usage_fetch_failed",
+                "frollo/cota", f"{type(exc).__name__}: {exc}",
+                severity="warning", code="usage_fetch_failed",
+                chat=False, tools=False,
+            )
+            return None
+        if not result:
+            errors.report_once(
+                self._usage_errors_seen, "usage_unavailable",
+                "frollo/cota", "não foi possível ler a cota da assinatura",
+                severity="warning", code="usage_unavailable",
+                chat=False, tools=False,
+            )
+            return None
+        self._store_usage(result)
+        self._write_quota_line(result)
+        return result
+
+    def _fetch_codex_usage_once(self):
+        try:
+            from lib.runner.codex import fetch_codex_usage
+            result = fetch_codex_usage(self.cwd)
+        except Exception as exc:
+            errors.report_once(
+                self._usage_errors_seen, "codex_usage_fetch_failed",
+                "frollo/cota", f"{type(exc).__name__}: {exc}",
+                severity="warning", code="codex_usage_fetch_failed",
+                chat=False, tools=False,
+            )
+            return None
+        if not result:
+            errors.report_once(
+                self._usage_errors_seen, "codex_usage_unavailable",
+                "frollo/cota", "não foi possível ler a cota do Codex",
+                severity="warning", code="codex_usage_unavailable",
+                chat=False, tools=False,
+            )
+            return None
+        self._last_codex_usage = result
+        self._write_quota_line(result)
+        return result
+
+    def _usage_loop(self):
+        while True:
+            last = getattr(self, "_last_usage_at", 0.0)
+            wait = max(0.0, USAGE_REFRESH_SECONDS - (time.time() - last)) if last else 0.0
+            if wait:
+                time.sleep(wait)
+            self._fetch_usage_once()
+            time.sleep(USAGE_REFRESH_SECONDS)
+
+    def _codex_usage_loop(self):
+        while True:
+            self._fetch_codex_usage_once()
+            time.sleep(USAGE_REFRESH_SECONDS)
+
+    def _ensure_usage_updater(self):
+        if self._backend_profile()["label"] != "claude":
+            return
+        if not self._stats_tty():
+            return
+        self._load_cached_usage()
+        if self._usage_thread and self._usage_thread.is_alive():
+            return
+        self._usage_thread = threading.Thread(target=self._usage_loop, daemon=True)
+        self._usage_thread.start()
+
+    def _ensure_codex_usage_updater(self):
+        if self._backend_profile()["label"] != "codex":
+            return
+        if not self._stats_tty():
+            return
+        if self._codex_usage_thread and self._codex_usage_thread.is_alive():
+            return
+        self._codex_usage_thread = threading.Thread(target=self._codex_usage_loop, daemon=True)
+        self._codex_usage_thread.start()
+
+    def _start_claude_usage_pane(self):
+        if self._backend_profile()["label"] != "claude":
+            return
+        self._load_cached_usage()
+        self._write_quota_line()
+        self._ensure_usage_updater()
+
+    def _start_codex_usage_pane(self):
+        if self._backend_profile()["label"] != "codex":
+            return
+        self._write_quota_line(getattr(self, "_last_codex_usage", None))
+        self._ensure_codex_usage_updater()
+
+    def _start_usage_pane(self):
+        if self._backend_profile()["label"] == "codex":
+            self._start_codex_usage_pane()
+        else:
+            self._start_claude_usage_pane()
 
     def _sync_mode(self):
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
@@ -230,34 +390,25 @@ class ClaudeClient:
         """No startup de um resume, restaura stats do último turno e atualiza cota async."""
         if not self._supports("session_resume"):
             return
-        import threading
-        import json as _json
         from lib.runner.stats import (
             _model_ctx_window, _render_quota_line, _render_ctx_line,
             _render_turn_line, _render_total_line, _render_no_data_lines,
         )
 
-        stats_tty_file = RUNDIR / "stats_tty"
-        if not stats_tty_file.exists():
-            return
-        stats_tty = stats_tty_file.read_text().strip()
+        stats_tty = self._stats_tty()
         if not stats_tty:
             return
 
-        cfg_dir = Path.home() / ".config" / "frollo"
+        cfg_dir = _config.CONFIG_PATH.parent
 
         # ── carregar dados salvos ──────────────────────────────────────────
         sess = {}
         sess_file = cfg_dir / "last_session.json"
         if sess_file.exists():
-            try: sess = _json.loads(sess_file.read_text())
+            try: sess = json.loads(sess_file.read_text())
             except Exception: pass
 
-        quota = {}
-        quota_file = cfg_dir / "last_quota.json"
-        if quota_file.exists():
-            try: quota = _json.loads(quota_file.read_text())
-            except Exception: pass
+        quota = self._load_cached_usage()
 
         # ── renderizar as 4 linhas ─────────────────────────────────────────
         if sess:
@@ -284,27 +435,7 @@ class ClaudeClient:
         except OSError:
             pass
 
-        # ── atualizar cota em background ───────────────────────────────────
-        def _bg():
-            try:
-                result = fetch_usage()
-            except Exception as exc:
-                errors.report_exception("frollo/cota", exc, severity="warning",
-                                        code="usage_fetch_failed", chat=False, tools=False)
-                return
-            if not result:
-                errors.report("frollo/cota", "não foi possível ler a cota da assinatura",
-                              severity="warning", code="usage_unavailable",
-                              chat=False, tools=False)
-                return
-            try:
-                fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-                os.write(fd, ("\033[4;1H" + _render_quota_line(result)).encode())
-                os.close(fd)
-            except OSError:
-                pass
-
-        threading.Thread(target=_bg, daemon=True).start()
+        self._ensure_usage_updater()
 
     def _run_turn(self, message, images=None):
         if self._backend_profile()["label"] == "codex":
@@ -321,6 +452,8 @@ class ClaudeClient:
                 sys.stdout.write(f"{CHAT_FG}retomando conversa anterior{RESET}\n\n")
             sys.stdout.flush()
             self._startup_stats()
+        else:
+            self._start_usage_pane()
 
         while True:
             try:

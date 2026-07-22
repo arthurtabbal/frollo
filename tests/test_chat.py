@@ -97,3 +97,25 @@ class TestBackendCapabilities:
         assert not supports(profile, "model_selection")
         assert not supports(profile, "session_resume")
         assert supports(profile, "reasoning_stream")
+
+    def test_codex_nao_restaura_cache_de_cota_claude_no_startup(self):
+        c = ClaudeClient(backend="codex")
+        c._load_cached_usage = MagicMock()
+        c._write_quota_line = MagicMock()
+        c._ensure_usage_updater = MagicMock()
+
+        c._start_claude_usage_pane()
+
+        c._load_cached_usage.assert_not_called()
+        c._write_quota_line.assert_not_called()
+        c._ensure_usage_updater.assert_not_called()
+
+    def test_start_usage_pane_codex_liga_updater_codex(self):
+        c = ClaudeClient(backend="codex")
+        c._start_claude_usage_pane = MagicMock()
+        c._start_codex_usage_pane = MagicMock()
+
+        c._start_usage_pane()
+
+        c._start_codex_usage_pane.assert_called_once_with()
+        c._start_claude_usage_pane.assert_not_called()

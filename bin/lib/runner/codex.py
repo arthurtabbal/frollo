@@ -39,6 +39,7 @@ _CODEX_DONE_DRAIN_GRACE = 0.35
 # nunca é cortado; 120s de silêncio absoluto é que viram falha explícita.
 _CODEX_IDLE_TIMEOUT = 120
 _CODEX_BOOT_TIMEOUT = 10
+_CODEX_QUOTA_TIMEOUT = 10
 # JSON-RPC: método não encontrado. Responder isso é o que impede o app-server de
 # ficar bloqueado esperando resposta de um request que o Frollo não sabe atender.
 _JSONRPC_METHOD_NOT_FOUND = -32601
@@ -516,6 +517,11 @@ class _CodexAdapter:
             return [self._error_event(message, code=code, raw=msg)]
         if "result" in msg and "id" in msg:
             result = msg.get("result") or {}
+            if "rateLimits" in result or "rateLimitsByLimitId" in result:
+                quota = _codex_quota_from_rate_limits_response(result)
+                if quota:
+                    out.append(self.event("quota.updated", {"quota": quota}, raw=msg))
+                return out
             if "userAgent" in result:
                 self.provider_version = _parse_codex_version(result.get("userAgent"))
             thread = result.get("thread")
@@ -637,15 +643,9 @@ class _CodexAdapter:
             }, turn_id=params.get("turnId"), raw=msg))
         elif method == "account/rateLimits/updated":
             limits = params.get("rateLimits") or {}
-            primary = limits.get("primary") or {}
-            out.append(self.event("quota.updated", {
-                "quota": {
-                    "scope": "account",
-                    "status": limits.get("rateLimitReachedType"),
-                    "used_percent": primary.get("usedPercent"),
-                    "resets_at": primary.get("resetsAt"),
-                }
-            }, raw=msg))
+            quota = _codex_quota_from_snapshot(limits)
+            if quota:
+                out.append(self.event("quota.updated", {"quota": quota}, raw=msg))
         elif method == "turn/diff/updated":
             out.append(self.event("diff.updated", {
                 "diff": {"format": "unified", "snapshot": True, "diff": params.get("diff")}
@@ -1093,6 +1093,10 @@ class _CodexRenderer:
             self.context_window = usage.get("context_window") or self.context_window
         elif kind == "quota.updated":
             self.quota = payload.get("quota") or self.quota
+            usage = _codex_quota_for_stats(self.quota)
+            if usage:
+                self.client._last_codex_usage = usage
+                _write_codex_quota_line(self.client, usage)
         elif kind == "notice":
             notice = payload.get("notice") or {}
             message = notice.get("message")
@@ -1190,7 +1194,8 @@ def _write_stats(client, renderer, elapsed):
     )
     ctx_max = renderer.context_window or _model_ctx_window(renderer.model_name)
     ctx_line = _render_ctx_line(input_tok + cache_read, ctx_max)
-    quota_line = _render_quota_line(_codex_quota_for_stats(renderer.quota))
+    quota_usage = _codex_quota_for_stats(renderer.quota) or getattr(client, "_last_codex_usage", None)
+    quota_line = _render_quota_line(quota_usage)
     try:
         fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
         os.write(fd, ("\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line).encode())
@@ -1199,19 +1204,114 @@ def _write_stats(client, renderer, elapsed):
         pass
 
 
+def _write_codex_quota_line(client, usage):
+    stats_tty_file = RUNDIR / "stats_tty"
+    stats_tty = stats_tty_file.read_text().strip() if stats_tty_file.exists() else ""
+    if not stats_tty:
+        return
+    fd = None
+    try:
+        fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
+        os.write(fd, ("\033[4;1H" + _render_quota_line(usage)).encode())
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _codex_quota_from_rate_limits_response(result):
+    if not isinstance(result, dict):
+        return None
+    by_id = result.get("rateLimitsByLimitId") or {}
+    snapshot = by_id.get("codex") if isinstance(by_id, dict) else None
+    if not snapshot:
+        snapshot = result.get("rateLimits")
+    return _codex_quota_from_snapshot(snapshot)
+
+
+def _codex_quota_from_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    primary = snapshot.get("primary") or {}
+    pct = primary.get("usedPercent")
+    if pct is None:
+        return None
+    return {
+        "scope": "account",
+        "label": snapshot.get("limitName") or snapshot.get("limitId") or "codex",
+        "status": snapshot.get("rateLimitReachedType"),
+        "used_percent": pct,
+        "resets_at": primary.get("resetsAt"),
+    }
+
+
 def _codex_quota_for_stats(quota):
     if not quota:
         return None
     pct = quota.get("used_percent")
-    reset = quota.get("resets_at")
+    if pct is None:
+        return None
+    reset = _codex_fmt_reset(quota.get("resets_at"))
     return {
         "limits": [{
-            "label": "codex",
+            "label": quota.get("label") or "codex",
             "pct": pct,
             "severity": None,
-            "reset": str(reset) if reset else "",
+            "reset": reset,
         }]
     }
+
+
+def _codex_fmt_reset(value):
+    if not value:
+        return ""
+    if isinstance(value, (int, float)):
+        # Codex app-server atualmente envia epoch seconds; aceite millis também.
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1000
+        try:
+            local = datetime.fromtimestamp(timestamp, timezone.utc).astimezone()
+        except (OSError, OverflowError, ValueError):
+            return ""
+    else:
+        text = str(value)
+        try:
+            local = datetime.fromisoformat(text).astimezone()
+        except (ValueError, TypeError):
+            return text if not text.isdigit() else ""
+
+    delta = (local - datetime.now(timezone.utc).astimezone()).total_seconds()
+    if 0 <= delta < 16 * 3600:
+        return local.strftime("%H:%M")
+    return f"{local:%b}{local.day}"
+
+
+def fetch_codex_usage(cwd, timeout=_CODEX_QUOTA_TIMEOUT):
+    """Read the Codex account quota via app-server and return stats-pane usage."""
+    proc = _CodexProcess(cwd)
+    try:
+        proc.start()
+        init_id = proc.send("initialize", {
+            "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True, "requestAttestation": False},
+        })
+        proc.wait_for(lambda obj: obj.get("id") == init_id, timeout)
+        proc.send("initialized", request=False)
+        rate_id = proc.send("account/rateLimits/read")
+        result = proc.wait_for(lambda obj: obj.get("id") == rate_id, timeout)
+        if isinstance(result, dict) and "error" in result:
+            return None
+        quota = _codex_quota_from_rate_limits_response((result or {}).get("result") or {})
+        return _codex_quota_for_stats(quota)
+    except (FileNotFoundError, PermissionError, TimeoutError, OSError, ValueError):
+        return None
+    finally:
+        proc.stop()
 
 
 def _codex_await(proc, adapter, renderer, request_id, label, timeout=_CODEX_BOOT_TIMEOUT):

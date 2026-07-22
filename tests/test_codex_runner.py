@@ -15,8 +15,10 @@ from lib.runner.codex import (
     _codex_live_progress_lines,
     _codex_normalize_command_output,
     _codex_preferred_command_output,
+    _codex_quota_for_stats,
     _codex_done_drain_finished,
     _codex_turn_start_params,
+    _write_stats,
 )
 from lib.runner.protocol import SCHEMA
 from lib.theme import CHAT_FG, RESET
@@ -92,6 +94,36 @@ class TestCodexAdapter:
         assert params["effort"] == "high"
         assert params["summary"] == "detailed"
         assert params["input"] == [{"type": "text", "text": "oi"}]
+
+    def test_quota_codex_formata_reset_epoch_sem_printar_inteiro_cru(self):
+        rendered = _codex_quota_for_stats({"used_percent": 2, "resets_at": 1785281318})
+        reset = rendered["limits"][0]["reset"]
+
+        assert rendered["limits"][0]["pct"] == 2
+        assert reset
+        assert reset != "1785281318"
+
+    def test_mapeia_rate_limits_read_para_quota_updated(self):
+        adapter = _adapter()
+
+        events = adapter.normalize({
+            "id": 7,
+            "result": {
+                "rateLimits": {
+                    "limitId": "codex",
+                    "limitName": None,
+                    "primary": {"usedPercent": 5, "resetsAt": 1785281318},
+                    "rateLimitReachedType": None,
+                },
+                "rateLimitsByLimitId": {},
+            },
+        })
+
+        assert events[0]["kind"] == "quota.updated"
+        quota = events[0]["payload"]["quota"]
+        assert quota["label"] == "codex"
+        assert quota["used_percent"] == 5
+        assert quota["resets_at"] == 1785281318
 
     def test_turn_start_params_converte_imagem_base64_para_local_image(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)
@@ -366,6 +398,50 @@ class TestCodexRenderer:
         renderer = _CodexRenderer(client, {"typewriter": False, "thinking_autoresize": False}, render, 0)
         renderer.render = render
         return renderer, render
+
+    def test_quota_updated_repinta_linha_do_stats_pane(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)
+        stats_tty = tmp_path / "stats-output"
+        stats_tty.write_text("")
+        (tmp_path / "stats_tty").write_text(str(stats_tty))
+        renderer, _ = self._renderer()
+
+        renderer.handle({
+            "kind": "quota.updated",
+            "payload": {"quota": {
+                "label": "codex",
+                "used_percent": 5,
+                "resets_at": 1785281318,
+            }},
+            "provider": {},
+        })
+
+        out = stats_tty.read_text()
+        assert "\033[4;1H" in out
+        assert "codex" in out
+        assert "5%" in out
+        assert renderer.client._last_codex_usage["limits"][0]["pct"] == 5
+
+    def test_write_stats_preserva_cota_codex_cacheada(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)
+        stats_tty = tmp_path / "stats-output"
+        stats_tty.write_text("")
+        (tmp_path / "stats_tty").write_text(str(stats_tty))
+        renderer, _ = self._renderer()
+        renderer.quota = None
+        renderer.client._total_input_tokens = 0
+        renderer.client._total_output_tokens = 0
+        renderer.client._total_elapsed = 0.0
+        renderer.client._total_cost = 0.0
+        renderer.client._last_codex_usage = {
+            "limits": [{"label": "codex", "pct": 5, "severity": None, "reset": "Jul28"}]
+        }
+
+        _write_stats(renderer.client, renderer, elapsed=1.0)
+
+        out = stats_tty.read_text()
+        assert "codex" in out
+        assert "5%" in out
 
     def test_suprime_warning_sandbox_conhecido_no_tools(self):
         renderer, _ = self._renderer()

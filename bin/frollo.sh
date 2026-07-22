@@ -22,6 +22,7 @@ if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
 fi
 
 _BACKEND="claude"
+_CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
 _next_is_backend=false
 for _arg in "$@"; do
     if [[ "$_next_is_backend" == "true" ]]; then
@@ -40,7 +41,7 @@ case "$_BACKEND" in
         command -v codex >/dev/null 2>&1 || { echo "erro: codex CLI não encontrado — instale/configure o Codex CLI"; exit 1; }
         ;;
     claude)
-        command -v claude >/dev/null 2>&1 || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
+        [[ -n "$_CLAUDE_BIN" ]] || { echo "erro: claude CLI não encontrado — instale com: npm i -g @anthropic-ai/claude-code"; exit 1; }
         ;;
     *)
         echo "erro: backend desconhecido: $_BACKEND (use claude ou codex)"
@@ -49,6 +50,7 @@ case "$_BACKEND" in
 esac
 
 RUNDIR="/tmp/claude-client-$$"
+CHAT_START="$RUNDIR/start_chat"
 mkdir -p "$RUNDIR"
 > "$RUNDIR/thinking"
 > "$RUNDIR/tools"
@@ -66,8 +68,8 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
 fi
 
 _AUTH_EMAIL=""
-if command -v claude >/dev/null 2>&1; then
-    _AUTH_EMAIL=$(claude auth status --json 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
+if [[ -n "$_CLAUDE_BIN" ]]; then
+    _AUTH_EMAIL=$("$_CLAUDE_BIN" auth status --json 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
 fi
 
 SRV="claude-$$"       # servidor tmux efêmero único por invocação
@@ -107,7 +109,7 @@ P_LEFT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Coluna direita: chat (40% da largura, altura total)
 tmux -L "$SRV" split-window -h -l "40%" -t "$P_LEFT" \
-    "cd '$PROJ_DIR' && CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
+    "while [ ! -f '$CHAT_START' ]; do sleep 0.05; done; cd '$PROJ_DIR' && exec env FROLLO_CONFIG='$_FROLLO_CONFIG' CLAUDE_BIN='$_CLAUDE_BIN' CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
 P_CHAT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Tools: base da coluna direita (_BOTTOM linhas, calculado acima)
@@ -291,6 +293,30 @@ ___|o o o|.|o o|  |[ ] ||"|_|o o o|.|o o| |.| |[ ] |___|o o o|.|o o|____|"|___
 CITYEOF
 }
 _paris > "$TOOLS_TTY" 2>/dev/null || true
+
+(
+    if [[ "$_show_stats" == "true" && "$_BACKEND" == "claude" ]]; then
+        FROLLO_CONFIG="$_FROLLO_CONFIG" python3 - "$REPO_DIR" >/dev/null 2>&1 <<'PY' || true
+import json
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+sys.path.insert(0, str(repo / "bin"))
+
+from lib import config
+from lib.usage import fetch_usage
+
+usage = fetch_usage()
+if usage:
+    path = config.CONFIG_PATH.parent / "last_quota.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(usage))
+PY
+    fi
+    sleep 1
+    : > "$CHAT_START"
+) &
 
 # Editor no topo da coluna esquerda
 tmux -L "$SRV" send-keys -t "$P_LEFT" "cd '$PROJ_DIR' && $_editor_cmd" Enter

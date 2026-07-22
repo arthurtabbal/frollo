@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import select
 import subprocess
 import sys
@@ -19,7 +20,6 @@ from .stats import (
     _model_price, _model_ctx_window,
     _render_quota_line, _render_ctx_line, _render_turn_line, _render_total_line,
 )
-from ..usage import fetch_usage
 from .turn import Turn
 
 from ..tools import RUNDIR, _ts
@@ -30,6 +30,26 @@ from .. import errors
 # Codex (ver _CODEX_IDLE_TIMEOUT em runner/codex.py): um turno longo que segue
 # emitindo linhas nunca é cortado; só o silêncio absoluto vira falha explícita.
 _CLAUDE_IDLE_TIMEOUT = 120
+
+
+def _claude_executable():
+    return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
+
+
+def _spawn_failure_detail(exc, cmd, cwd):
+    cmd_text = " ".join(str(part) for part in cmd)
+    parts = [
+        f"exception: {type(exc).__name__}: {exc or '<sem detalhe>'}",
+        f"cmd: {cmd_text}",
+        f"cwd: {cwd}",
+        f"CLAUDE_BIN: {os.environ.get('CLAUDE_BIN') or '<unset>'}",
+        f"which claude: {shutil.which('claude') or '<not found>'}",
+        f"PATH: {os.environ.get('PATH') or '<unset>'}",
+    ]
+    filename = getattr(exc, "filename", None)
+    if filename:
+        parts.insert(1, f"filename: {filename}")
+    return "\n".join(parts)
 
 
 def _parse_rate_limit_line(raw):
@@ -123,7 +143,7 @@ def _ensure_proc(client, persistent):
         _terminate_proc(client.proc)
 
     cmd = [
-        "claude", "--print",
+        _claude_executable(), "--print",
         "--output-format", "stream-json",
         "--input-format", "stream-json",
         "--verbose",
@@ -148,17 +168,21 @@ def _ensure_proc(client, persistent):
         else:
             cmd.append("--continue")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        bufsize=1,
-        cwd=client.cwd,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            cwd=client.cwd,
+        )
+    except (FileNotFoundError, PermissionError) as exc:
+        exc.cmd = cmd
+        raise
     client.proc = proc
     client._proc_desc = proc_desc
     return proc, False
@@ -176,13 +200,14 @@ def run_turn(client, message, images=None):
     try:
         proc, _reused = _ensure_proc(client, persistent)
     except (FileNotFoundError, PermissionError) as exc:
+        detail = _spawn_failure_detail(exc, getattr(exc, "cmd", None) or ["claude"], client.cwd)
         errors.report(
             "claude", "não foi possível iniciar o CLI `claude`",
-            severity="fatal", code="spawn_failed", detail=str(exc),
+            severity="fatal", code="spawn_failed", detail=detail,
             tmux_srv=client.tmux_srv,
         )
         sys.stdout.write(
-            f"{DIM}Instale com: npm i -g @anthropic-ai/claude-code{RESET}\n"
+            f"{DIM}Instale com: npm i -g @anthropic-ai/claude-code; se já existe, confira PATH, CLAUDE_BIN e cwd.{RESET}\n"
         )
         sys.stdout.flush()
         return False
@@ -356,7 +381,7 @@ def run_turn(client, message, images=None):
                 except Exception:
                     pass
                 ctx_line = _render_ctx_line(_ctx_used, _ctx_max)
-                quota_line = _render_quota_line(None)
+                quota_line = _render_quota_line(getattr(client, "_last_usage", None))
                 content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
                 _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
                 os.write(_fd2, content.encode())
@@ -364,35 +389,8 @@ def run_turn(client, message, images=None):
             except OSError:
                 pass
 
-        # Contador de geração: turnos rápidos consecutivos disparam _bg_usage threads
-        # que podem terminar fora de ordem. Cada uma captura a geração no início e só
-        # repinta a linha 4 se ainda for a corrente — evita cota stale por cima da fresca.
-        client._usage_gen = getattr(client, '_usage_gen', 0) + 1
-        _my_usage_gen = client._usage_gen
-
-        def _bg_usage(_gen):
-            result = fetch_usage()
-            if not result:
-                return
-            client._last_usage = result
-            client._last_usage_at = time.time()
-            try:
-                _quota_file = config.CONFIG_PATH.parent / "last_quota.json"
-                _quota_file.write_text(json.dumps(result))
-            except Exception:
-                pass
-            if _stats_tty and getattr(client, '_usage_gen', 0) == _gen:
-                try:
-                    # cota é a 4ª (última) linha do pane; repinta só ela
-                    line = "\033[4;1H" + _render_quota_line(result)
-                    _fd = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
-                    os.write(_fd, line.encode())
-                    os.close(_fd)
-                except OSError:
-                    pass
-
-        if _stats_tty:
-            threading.Thread(target=_bg_usage, args=(_my_usage_gen,), daemon=True).start()
+        if _stats_tty and hasattr(client, "_ensure_usage_updater"):
+            client._ensure_usage_updater()
 
         if not persistent:
             proc.wait()

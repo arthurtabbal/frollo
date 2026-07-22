@@ -71,9 +71,9 @@ def _limit_color(pct, severity=None):
 
 def _render_quota_line(usage):
     """usage: dict com `limits` detalhado (sessão/semana/por-modelo) e/ou as
-    chaves legadas session_pct/week_pct/session_reset. None/{} = ainda carregando."""
+    chaves legadas session_pct/week_pct/session_reset. None/{} = linha silenciosa."""
     if not usage:
-        return f"\r\033[2K{DIM}{'cota':>8}  ◎   carregando…{RESET}"
+        return "\r\033[2K"
 
     limits = usage.get('limits')
     if limits:

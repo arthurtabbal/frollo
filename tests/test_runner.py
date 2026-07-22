@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner import run_turn, _parse_rate_limit_line, _terminate_proc
+from lib.runner import run_turn, _ensure_proc, _parse_rate_limit_line, _terminate_proc
 from lib.theme import THINKING_FG
 
 
@@ -41,6 +41,27 @@ class TestClaudeNaoEncontrado:
         out = capsys.readouterr().out
         assert "claude" in out.lower()
         assert "npm" in out or "não encontrado" in out
+
+    def test_spawn_usa_claude_bin_quando_definido(self, fake_client, monkeypatch):
+        monkeypatch.setenv("CLAUDE_BIN", "/tmp/claude-custom")
+        proc = MagicMock()
+
+        with patch("lib.runner.subprocess.Popen", return_value=proc) as popen:
+            _ensure_proc(fake_client, persistent=False)
+
+        assert popen.call_args.args[0][0] == "/tmp/claude-custom"
+
+    def test_spawn_failed_registra_diagnostico_util(self, fake_client):
+        with patch("lib.runner.subprocess.Popen", side_effect=FileNotFoundError), \
+             patch("lib.runner.errors.report") as report:
+            result = run_turn(fake_client, "oi")
+
+        assert result is False
+        detail = report.call_args.kwargs["detail"]
+        assert "cmd:" in detail
+        assert "cwd:" in detail
+        assert "PATH:" in detail
+        assert "which claude:" in detail
 
 
 class _FakeStdout:

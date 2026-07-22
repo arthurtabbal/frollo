@@ -78,8 +78,10 @@ def test_render_uses_limits_when_present():
     assert "↺" in line  # resets presentes
 
 
-def test_render_loading_and_fallback():
-    assert "carregando" in _render_quota_line(None)
+def test_render_empty_and_fallback():
+    line = _render_quota_line(None)
+    assert "carregando" not in line
+    assert line.startswith("\r\033[2K")
     # dict legado sem `limits` cai no caminho de compat
     legacy = {"session_pct": 3, "week_pct": 9, "session_reset": "21:30"}
     line = _render_quota_line(legacy)
