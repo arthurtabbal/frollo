@@ -26,7 +26,7 @@ from ..tools import RUNDIR, TOOLS_LOG, _log, _ts, log_tool_call, log_tool_result
 from .assistant_text import AssistantTextRenderer
 from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
-from .protocol import SCHEMA
+from .protocol import make_event
 from .render import RenderQueue
 from .stats import _model_ctx_window, _render_ctx_line, _render_quota_line, _render_total_line, _render_turn_line
 from .text import reset_col
@@ -51,10 +51,6 @@ _CODEX_IGNORED_NOTIFICATIONS = {
     "remoteControl/status/changed",
     "thread/settings/updated",
 }
-
-
-def _utc_now():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _parse_codex_version(user_agent):
@@ -469,19 +465,16 @@ class _CodexAdapter:
 
     def event(self, kind, payload, *, turn_id=None, item_id=None, raw=None):
         self.seq += 1
-        return {
-            "schema": SCHEMA,
-            "kind": kind,
-            "ts": _utc_now(),
-            "seq": self.seq,
-            "provider": self._provider(),
-            "session_id": self.session_id,
-            "turn_id": turn_id if turn_id is not None else self.turn_id,
-            "item_id": item_id,
-            "parent_item_id": None,
-            "payload": payload,
-            "raw": raw,
-        }
+        return make_event(
+            kind,
+            payload,
+            seq=self.seq,
+            provider=self._provider(),
+            session_id=self.session_id,
+            turn_id=turn_id if turn_id is not None else self.turn_id,
+            item_id=item_id,
+            raw=raw,
+        )
 
     def _error_event(self, message, *, code=None, source="provider", raw=None, request=None):
         payload = {"error": {"message": message, "code": code, "source": source}}

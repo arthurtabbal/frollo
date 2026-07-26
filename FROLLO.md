@@ -112,7 +112,7 @@ observação, não antes.
   `errors.jsonl`). `except: pass` e `return []` em resposta a coisa que não se entendeu são bug, não
   robustez — ver seção "Erros nunca em silêncio".
 - **Capabilities por backend** vivem em `lib/runner/capabilities.py`. A UI deve consultar flags (`model_selection`, `session_resume`, `cost_usage`, `reasoning_stream`, etc.) em vez de testar nomes de provedores sempre que estiver decidindo comportamento de interface.
-- **Schema canônico atual** vive em `lib/runner/protocol.py` como `frollo.event.v0`. O Codex já normaliza eventos para esse schema; o Claude ainda usa a máquina `Turn` diretamente, então a issue do protocolo segue parcial.
+- **Protocolo canônico atual** vive em `lib/runner/protocol.py` como `frollo.event.v0`: nome do schema, kinds conhecidos, construtor e validação do envelope comum. O Codex já normaliza eventos por esse caminho; o Claude ainda usa a máquina `Turn` diretamente, então a issue do protocolo segue parcial.
 
 ## Hook event schema (campos relevantes)
 
@@ -223,7 +223,7 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `lib/runner/__init__.py` | ~375 | `_ensure_proc`/`_terminate_proc` (spawn per-turn ou reaproveite em modo persistente), loop `select` que alimenta `Turn.handle_line`, finalize (stats/cota/restore) — tudo em `try/finally` (garante restore do termios e do pane de thinking mesmo em erro/Ctrl+C) |
 | `lib/runner/codex.py` | ~900 | Backend Codex App Server: processo JSONL, adapter para `frollo.event.v0`, renderer para os panes atuais, stats/quota Codex (`account/rateLimits/read` + updates esparsos) |
 | `lib/runner/capabilities.py` | ~60 | Perfis de backend e flags que a UI usa para degradar comportamento sem checar nomes de provedores |
-| `lib/runner/protocol.py` | ~10 | Constantes do protocolo canônico (`SCHEMA = "frollo.event.v0"`) |
+| `lib/runner/protocol.py` | ~90 | Envelope do protocolo canônico (`SCHEMA`, `EVENT_KINDS`, `make_event`, `validate_event`) |
 | `lib/runner/assistant_text.py` | ~80 | Renderer compartilhado de texto do assistente: Markdown buffer, separação entre response items, finalização de linha |
 | `lib/runner/turn.py` | ~345 | Classe `Turn` — máquina de estados do turno (Fase 2): consome linhas do stream-json e despacha por tipo de evento (`_handle_stream_event`, `_handle_content_block_delta`, `_handle_result` etc.) |
 | `lib/runner/render.py` | ~225 | `RenderQueue` (Fase 3) — fila única que roda o typewriter (chat/thinking/gárgulas) numa thread própria; skip via `threading.Event` compartilhado; spinner via tick periódico mesmo em animação longa |
