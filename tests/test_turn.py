@@ -41,6 +41,78 @@ def _se(event):
     return {"type": "stream_event", "event": event}
 
 
+class TestFrolloEvents:
+    def test_cria_evento_de_inicio_do_turno(self, fake_client):
+        turn = _turn(fake_client)
+
+        event = turn.frollo_events[0]
+
+        assert event["schema"] == "frollo.event.v0"
+        assert event["kind"] == "turn.started"
+        assert event["provider"]["name"] == "claude"
+        assert event["provider"]["surface"] == "stream-json"
+        assert event["turn_id"].startswith("claude-turn-")
+        assert event["payload"] == {"status": "in_progress"}
+
+    def test_emite_texto_assistente_em_paralelo_ao_renderer(self, fake_client):
+        turn = _turn(fake_client)
+
+        turn.handle_event(_se({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}))
+        turn.handle_event(_se({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "olá"}}))
+        turn.handle_event(_se({"type": "content_block_stop", "index": 1}))
+
+        kinds = [event["kind"] for event in turn.frollo_events]
+        assert "message.assistant.delta" in kinds
+        assert "message.assistant.completed" in kinds
+        completed = turn.frollo_events[-1]
+        assert completed["item_id"] == "claude:block:1"
+        assert completed["payload"]["text"] == "olá"
+
+    def test_emite_bash_com_exit_code_como_command_failed(self, fake_client):
+        turn = _turn(fake_client)
+
+        with patch("lib.runner.turn.log_tool_call"), patch("lib.runner.turn.log_tool_result"):
+            turn.handle_event({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use",
+                    "id": "tu1",
+                    "name": "Bash",
+                    "input": {"command": "exit 7"},
+                }]},
+            })
+            turn.handle_event({
+                "type": "user",
+                "message": {"content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "is_error": False,
+                    "content": [{"type": "text", "text": "Command failed with exit code: 7"}],
+                }]},
+            })
+
+        command_events = [event for event in turn.frollo_events if event["item_id"] == "tu1"]
+        assert [event["kind"] for event in command_events] == ["command.started", "command.failed"]
+        assert command_events[-1]["payload"]["command"]["command"] == "exit 7"
+        assert command_events[-1]["payload"]["command"]["exit_code"] == 7
+
+    def test_result_fecha_turno_com_evento_v0(self, fake_client):
+        turn = _turn(fake_client)
+
+        turn.handle_event({
+            "type": "result",
+            "session_id": "sess-123",
+            "total_cost_usd": 0.042,
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+
+        assert turn.frollo_events[-2]["kind"] == "usage.updated"
+        assert turn.frollo_events[-2]["payload"]["usage"]["total_cost_usd"] == 0.042
+        assert turn.frollo_events[-1]["kind"] == "turn.finished"
+        assert turn.frollo_events[-1]["session_id"] == "sess-123"
+        assert turn.frollo_events[-1]["payload"]["status"] == "completed"
+
+
 class TestMessageStart:
     def test_atualiza_tokens_e_modelo(self, fake_client):
         turn = _turn(fake_client)

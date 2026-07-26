@@ -24,7 +24,18 @@ from .. import errors
 from .assistant_text import AssistantTextRenderer
 from .panes import THINKING_LOG, _resize_thinking
 from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request, _write_stdin
+from .protocol import make_event
 from .stats import _fmt_tok
+
+
+def _tool_result_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
+        )
+    return str(content or "")
 
 
 class Turn:
@@ -40,12 +51,18 @@ class Turn:
         self.render = render
 
         self._tool_names = {}
+        self._tool_inputs = {}
         self.start_time = time.time()
+        self.turn_id = f"claude-turn-{int(self.start_time * 1000)}"
+        self.frollo_events = []
+        self._frollo_seq = 0
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_read_tokens = 0
         self.cache_creation_tokens = 0
         self.current_block = None
+        self.current_block_item_id = None
+        self._text_block_buffers = {}
         self.text_started = False
         self.fire_frame = 0
         self.assistant_text = AssistantTextRenderer(client, cfg, render)
@@ -75,6 +92,38 @@ class Turn:
         self.result_cost = None
         self.result_in_tok = None
         self.result_out_tok = None
+        self._emit("turn.started", {"status": "in_progress"})
+
+    # -- Frollo v0 events -------------------------------------------------
+
+    def _provider(self):
+        return {
+            "name": "claude",
+            "surface": "stream-json",
+            "version": None,
+            "model": self.model_name or getattr(self.client, "observed_model", None),
+        }
+
+    def _emit(self, kind, payload, *, item_id=None, raw=None):
+        self._frollo_seq += 1
+        event = make_event(
+            kind,
+            payload,
+            seq=self._frollo_seq,
+            provider=self._provider(),
+            session_id=getattr(self.client, "session_id", None),
+            turn_id=self.turn_id,
+            item_id=item_id,
+            raw=raw,
+        )
+        self.frollo_events.append(event)
+        return event
+
+    def _block_item_id(self, event):
+        index = event.get("index")
+        if index is None:
+            return None
+        return f"claude:block:{index}"
 
     # -- spinner ----------------------------------------------------------
 
@@ -192,6 +241,15 @@ class Turn:
             self.model_name = msg.get("model", self.model_name)
             if self.model_name:
                 self.client.observed_model = self.model_name
+            self._emit("usage.updated", {
+                "usage": {
+                    "scope": "turn",
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "cached_input_tokens": self.cache_read_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_tokens,
+                }
+            }, raw=e)
 
         elif et == "message_delta":
             usage = e.get("usage", {})
@@ -200,16 +258,35 @@ class Turn:
             thinking_tokens = details.get("thinking_tokens")
             if isinstance(thinking_tokens, int):
                 self.thinking_tokens_seen = max(self.thinking_tokens_seen, thinking_tokens)
+            self._emit("usage.updated", {
+                "usage": {
+                    "scope": "turn",
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "cached_input_tokens": self.cache_read_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_tokens,
+                    "reasoning_output_tokens": thinking_tokens,
+                }
+            }, raw=e)
 
         elif et == "content_block_start":
             block = e.get("content_block", {})
             self.current_block = block.get("type")
+            self.current_block_item_id = self._block_item_id(e)
             if self.current_block == "thinking":
                 # Header e resize são preguiçosos: só ocorrem quando chega texto
                 # de thinking de fato (ver content_block_delta). Alguns requests
                 # chegam só com signature_delta; a nota fica deferida para o fim do
                 # turno, para um bloco vazio não apagar thinking visível anterior.
                 self.thinking_header_written = False
+                self._emit("reasoning.started", {
+                    "status": "in_progress",
+                    "visibility": "summary",
+                    "summary_text": "",
+                    "content_text": "",
+                    "summary_parts": [],
+                    "content_parts": [],
+                }, item_id=self.current_block_item_id, raw=e)
             elif self.current_block == "text":
                 if self.thinking_visible and self.thinking_autoresize:
                     _resize_thinking(self.client.tmux_srv, "summary")
@@ -218,6 +295,8 @@ class Turn:
                 # tente desenhar bem no instante em que o texto começa a sair.
                 self.text_started = True
                 self.assistant_text.start_block()
+                if self.current_block_item_id:
+                    self._text_block_buffers[self.current_block_item_id] = ""
 
         elif et == "content_block_delta":
             self._handle_content_block_delta(e.get("delta", {}))
@@ -235,6 +314,10 @@ class Turn:
             chunk_t = delta.get("thinking") or delta.get("text") or ""
 
             if chunk_t:
+                self._emit("reasoning.delta", {
+                    "delta": chunk_t,
+                    "visibility": "summary",
+                }, item_id=self.current_block_item_id, raw=delta)
                 self.thinking_visible = True
                 if not self.thinking_header_written:
                     _log(THINKING_LOG, f"{CLEAR}{THINKING_TS}[{_ts()}]{RESET}\n\033[40m{THINKING_FG}")
@@ -259,6 +342,15 @@ class Turn:
 
         elif dtype == "text_delta":
             chunk = delta.get("text", "")
+            if chunk:
+                self._emit("message.assistant.delta", {
+                    "role": "assistant",
+                    "delta": chunk,
+                }, item_id=self.current_block_item_id, raw=delta)
+                if self.current_block_item_id:
+                    self._text_block_buffers[self.current_block_item_id] = (
+                        self._text_block_buffers.get(self.current_block_item_id, "") + chunk
+                    )
             self.assistant_text.push_delta(chunk, suppress=self._suppress_perm_text)
 
     def _handle_content_block_stop(self):
@@ -270,9 +362,24 @@ class Turn:
                 _log(THINKING_LOG, f"{RESET}\n")
             else:
                 self._empty_thinking_blocks += 1
+            self._emit("reasoning.completed", {
+                "status": "completed",
+                "visibility": "summary",
+                "summary_text": "",
+                "content_text": "",
+                "summary_parts": [],
+                "content_parts": [],
+            }, item_id=self.current_block_item_id)
         elif self.current_block == "text":
             self.assistant_text.finish(add_newline_if_mid_line=True)
+            text = self._text_block_buffers.pop(self.current_block_item_id, "")
+            self._emit("message.assistant.completed", {
+                "role": "assistant",
+                "text": text,
+                "phase": "final_answer",
+            }, item_id=self.current_block_item_id)
         self.current_block = None
+        self.current_block_item_id = None
 
     # -- assistant / user -------------------------------------------------
 
@@ -280,20 +387,48 @@ class Turn:
         for block in event.get("message", {}).get("content", []):
             if block.get("type") == "tool_use":
                 log_tool_call(block, self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, render=self.render)
-                self._tool_names[block.get("id", "")] = block.get("name", "?")
+                tool_id = block.get("id", "")
+                tool_name = block.get("name", "?")
+                tool_input = block.get("input") or {}
+                self._tool_names[tool_id] = tool_name
+                self._tool_inputs[tool_id] = tool_input
+                if tool_name == "Bash":
+                    self._emit("command.started", {
+                        "status": "in_progress",
+                        "command": {
+                            "command": tool_input.get("command"),
+                            "cwd": self.client.cwd,
+                            "source": "claude_tool",
+                        },
+                    }, item_id=tool_id, raw=block)
+                elif tool_name in ("Edit", "MultiEdit", "Write"):
+                    self._emit("file.change.started", {
+                        "status": "in_progress",
+                        "file": {
+                            "path": tool_input.get("file_path") or tool_input.get("path"),
+                            "operation": "add" if tool_name == "Write" else "update",
+                        },
+                    }, item_id=tool_id, raw=block)
+                else:
+                    self._emit("tool.started", {
+                        "status": "in_progress",
+                        "tool": {
+                            "name": tool_name,
+                            "input": tool_input,
+                        },
+                    }, item_id=tool_id, raw=block)
 
     def _handle_user(self, event):
         for block in event.get("message", {}).get("content", []):
             if block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id", "")
+                tool_name = self._tool_names.get(tool_id, "")
+                tool_input = self._tool_inputs.get(tool_id, {})
+                result_text = _tool_result_text(block.get("content", ""))
                 if block.get("is_error"):
-                    content  = block.get("content", "")
-                    err_text = (
-                        next((i.get("text", "") for i in content if i.get("type") == "text"), "")
-                        if isinstance(content, list) else str(content)
-                    )
+                    err_text = result_text
                     if ("requested permissions" in err_text or "haven't granted" in err_text
                             or "requires approval" in err_text):
-                        tool_name = self._tool_names.get(block.get("tool_use_id", ""), "?")
                         self.render.suspend()
                         try:
                             if _handle_permission_ask(tool_name, self.client.cwd):
@@ -303,13 +438,40 @@ class Turn:
                             self.render.resume()
                         self._suppress_perm_text = True
                 log_tool_result(block)
-                _blk_tool = self._tool_names.get(block.get("tool_use_id", ""), "")
+                if tool_name == "Bash":
+                    exit_match = re.search(r'exit code[:\s]+([1-9]\d*)', result_text, re.IGNORECASE)
+                    command_failed = bool(block.get("is_error") or exit_match)
+                    self._emit("command.failed" if command_failed else "command.finished", {
+                        "status": "failed" if command_failed else "completed",
+                        "command": {
+                            "command": tool_input.get("command"),
+                            "cwd": self.client.cwd,
+                            "source": "claude_tool",
+                            "output": result_text,
+                            "exit_code": int(exit_match.group(1)) if exit_match else None,
+                            "duration_ms": None,
+                        },
+                    }, item_id=tool_id, raw=block)
+                elif tool_name in ("Edit", "MultiEdit", "Write"):
+                    self._emit("file.change.finished", {
+                        "status": "failed" if block.get("is_error") else "completed",
+                        "file": {
+                            "path": tool_input.get("file_path") or tool_input.get("path"),
+                            "operation": "add" if tool_name == "Write" else "update",
+                            "diff": None,
+                        },
+                    }, item_id=tool_id, raw=block)
+                elif tool_name:
+                    self._emit("tool.failed" if block.get("is_error") else "tool.finished", {
+                        "status": "failed" if block.get("is_error") else "completed",
+                        "tool": {
+                            "name": tool_name,
+                            "output": result_text,
+                        },
+                    }, item_id=tool_id, raw=block)
+                _blk_tool = tool_name
                 if _blk_tool == "Bash" and not block.get("is_error"):
-                    _blk_content = block.get("content", "")
-                    _blk_text    = (
-                        next((i.get("text", "") for i in _blk_content if i.get("type") == "text"), "")
-                        if isinstance(_blk_content, list) else str(_blk_content)
-                    )
+                    _blk_text = result_text
                     if re.search(r'exit code[:\s]+([1-9]\d*)', _blk_text, re.IGNORECASE):
                         if self.cfg.get("gargoyles", True):
                             _g_prefix, _g_fala = _gargula_comment("bash_error", force=True)
@@ -326,6 +488,7 @@ class Turn:
         sid = event.get("session_id")
         if sid:
             self.client.session_id = sid
+        failed = bool(event.get("is_error") or (event.get("subtype") or "success") != "success")
         if event.get("is_error") or (event.get("subtype") or "success") != "success":
             # O CLI encerra o turno com is_error/subtype quando a execução falhou
             # (erro de API, tool travada, max_turns). Antes o turno simplesmente
@@ -343,7 +506,22 @@ class Turn:
         if _r_usage:
             self.result_in_tok  = _r_usage.get("input_tokens")
             self.result_out_tok = _r_usage.get("output_tokens")
+            self._emit("usage.updated", {
+                "usage": {
+                    "scope": "turn",
+                    "input_tokens": self.result_in_tok,
+                    "output_tokens": self.result_out_tok,
+                    "cached_input_tokens": _r_usage.get("cache_read_input_tokens"),
+                    "cache_creation_input_tokens": _r_usage.get("cache_creation_input_tokens"),
+                    "total_cost_usd": self.result_cost,
+                }
+            }, raw=event)
         self._emit_deferred_thinking_notice()
+        self._emit("turn.failed" if failed else "turn.finished", {
+            "status": "failed" if failed else "completed",
+            "duration_ms": int((time.time() - self.start_time) * 1000),
+            "error": event.get("result") if failed else None,
+        }, raw=event)
         # 'result' delimita o fim do turno no protocolo -- em processo persistente
         # (Fase 4) o processo continua vivo e não fecha stdout sozinho depois disso,
         # então o loop de ingestão em run_turn não pode esperar EOF.
