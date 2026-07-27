@@ -68,7 +68,7 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$_FROLLO_CONFIG" ]]; then
 fi
 
 _AUTH_EMAIL=""
-if [[ -n "$_CLAUDE_BIN" ]]; then
+if [[ "$_BACKEND" == "claude" && -n "$_CLAUDE_BIN" ]]; then
     _AUTH_EMAIL=$("$_CLAUDE_BIN" auth status --json 2>/dev/null | jq -r '.email // empty' 2>/dev/null || true)
 fi
 
@@ -156,6 +156,7 @@ tmux -L "$SRV" select-pane -t "$P_THINKING" -T "◎ thinking"
 tmux -L "$SRV" select-pane -t "$P_TOOLS"    -T "⚡ tools"
 if [[ "$_show_stats" == "true" ]]; then
     _stats_title="〰 stats"
+    [[ "$_BACKEND" != "claude" ]] && _stats_title="〰 stats · $_BACKEND"
     [[ -n "$_AUTH_EMAIL" ]] && _stats_title="〰 stats · $_AUTH_EMAIL"
     tmux -L "$SRV" select-pane -t "$P_STATS" -T "$_stats_title"
 fi

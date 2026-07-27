@@ -149,3 +149,16 @@ class TestBackendCapabilities:
 
         c._start_codex_usage_pane.assert_called_once_with()
         c._start_claude_usage_pane.assert_not_called()
+
+    def test_stats_title_codex_usa_email_do_codex(self):
+        c = ClaudeClient(backend="codex")
+        c.tmux_srv = "srv"
+        import chat
+        (chat.RUNDIR / "stats_pane").write_text("%42")
+
+        with patch("chat.subprocess.run") as run:
+            c._update_stats_title("codex@example.com")
+
+        assert run.call_args.args[0] == [
+            "tmux", "-L", "srv", "select-pane", "-t", "%42", "-T", "〰 stats · codex@example.com",
+        ]

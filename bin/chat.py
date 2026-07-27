@@ -157,6 +157,35 @@ class ClaudeClient:
         except OSError:
             return ""
 
+    def _stats_pane(self):
+        stats_pane_file = RUNDIR / "stats_pane"
+        if not stats_pane_file.exists():
+            return ""
+        try:
+            return stats_pane_file.read_text().strip()
+        except OSError:
+            return ""
+
+    def _update_stats_title(self, email=None):
+        if not self.tmux_srv:
+            return
+        pane = self._stats_pane()
+        if not pane:
+            return
+        label = self._backend_profile()["label"]
+        title = "〰 stats"
+        if email:
+            title = f"{title} · {email}"
+        elif label != "claude":
+            title = f"{title} · {label}"
+        try:
+            subprocess.run(
+                ["tmux", "-L", self.tmux_srv, "select-pane", "-t", pane, "-T", title],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     def _quota_file(self):
         return _config.CONFIG_PATH.parent / "last_quota.json"
 
@@ -244,6 +273,14 @@ class ClaudeClient:
                 chat=False, tools=False,
             )
             return None
+        email = result.get("_account_email")
+        if email:
+            self._codex_account_email = email
+        self._update_stats_title(getattr(self, "_codex_account_email", None))
+        ctx = getattr(self, "_last_codex_ctx", None)
+        if ctx:
+            from lib.runner.codex import _write_codex_ctx_line
+            _write_codex_ctx_line(self, ctx.get("used", 0), ctx.get("max", 0))
         self._last_codex_usage = result
         self._write_quota_line(result)
         return result

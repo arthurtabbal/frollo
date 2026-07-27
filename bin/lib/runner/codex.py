@@ -1084,6 +1084,9 @@ class _CodexRenderer:
             self.cache_read_tokens = usage.get("cached_input_tokens") or self.cache_read_tokens
             self.reasoning_output_tokens = usage.get("reasoning_output_tokens") or self.reasoning_output_tokens
             self.context_window = usage.get("context_window") or self.context_window
+            ctx_used = _codex_context_used(self.input_tokens, self.cache_read_tokens)
+            self.client._last_codex_ctx = {"used": ctx_used, "max": self.context_window}
+            _write_codex_ctx_line(self.client, ctx_used, self.context_window)
         elif kind == "quota.updated":
             self.quota = payload.get("quota") or self.quota
             usage = _codex_quota_for_stats(self.quota)
@@ -1166,6 +1169,15 @@ class _CodexRenderer:
         return "cancel"
 
 
+def _codex_context_used(input_tokens, cache_read_tokens=0):
+    """Codex `inputTokens` already counts cached input toward the context window.
+
+    Keep cached tokens as a detail in the turn line, but do not add them again to
+    the context bar.
+    """
+    return input_tokens or cache_read_tokens or 0
+
+
 def _write_stats(client, renderer, elapsed):
     stats_tty_file = RUNDIR / "stats_tty"
     stats_tty = stats_tty_file.read_text().strip() if stats_tty_file.exists() else ""
@@ -1180,13 +1192,17 @@ def _write_stats(client, renderer, elapsed):
     cost_turn = 0.0
     client._total_cost = getattr(client, "_total_cost", 0.0) + cost_turn
 
-    turn_line = _render_turn_line(_ts(), input_tok, output_tok, elapsed, cost_turn, cache_read)
+    turn_line = _render_turn_line(
+        _ts(), input_tok, output_tok, elapsed, cost_turn, cache_read, show_cost=False, compact=True,
+    )
     total_line = _render_total_line(
         client._total_input_tokens, client._total_output_tokens,
-        client._total_elapsed, client._total_cost,
+        client._total_elapsed, client._total_cost, show_cost=False, compact=True,
     )
     ctx_max = renderer.context_window or _model_ctx_window(renderer.model_name)
-    ctx_line = _render_ctx_line(input_tok + cache_read, ctx_max)
+    ctx_used = _codex_context_used(input_tok, cache_read)
+    ctx_line = _render_ctx_line(ctx_used, ctx_max)
+    client._last_codex_ctx = {"used": ctx_used, "max": ctx_max}
     quota_usage = _codex_quota_for_stats(renderer.quota) or getattr(client, "_last_codex_usage", None)
     quota_line = _render_quota_line(quota_usage)
     try:
@@ -1206,6 +1222,25 @@ def _write_codex_quota_line(client, usage):
     try:
         fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
         os.write(fd, ("\033[4;1H" + _render_quota_line(usage)).encode())
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _write_codex_ctx_line(client, ctx_used, ctx_max):
+    stats_tty_file = RUNDIR / "stats_tty"
+    stats_tty = stats_tty_file.read_text().strip() if stats_tty_file.exists() else ""
+    if not stats_tty:
+        return
+    fd = None
+    try:
+        fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
+        os.write(fd, ("\033[3;1H" + _render_ctx_line(ctx_used, ctx_max)).encode())
     except OSError:
         pass
     finally:
@@ -1259,6 +1294,14 @@ def _codex_quota_for_stats(quota):
     }
 
 
+def _codex_account_email_from_response(result):
+    account = (result or {}).get("account") if isinstance(result, dict) else None
+    if not isinstance(account, dict):
+        return None
+    email = account.get("email")
+    return email if isinstance(email, str) and email else None
+
+
 def _codex_fmt_reset(value):
     if not value:
         return ""
@@ -1295,12 +1338,23 @@ def fetch_codex_usage(cwd, timeout=_CODEX_QUOTA_TIMEOUT):
         })
         proc.wait_for(lambda obj: obj.get("id") == init_id, timeout)
         proc.send("initialized", request=False)
+        email = None
+        try:
+            account_id = proc.send("account/read", {"refreshToken": False})
+            account_result = proc.wait_for(lambda obj: obj.get("id") == account_id, timeout)
+            if isinstance(account_result, dict) and "error" not in account_result:
+                email = _codex_account_email_from_response((account_result or {}).get("result") or {})
+        except TimeoutError:
+            pass
         rate_id = proc.send("account/rateLimits/read")
         result = proc.wait_for(lambda obj: obj.get("id") == rate_id, timeout)
         if isinstance(result, dict) and "error" in result:
             return None
         quota = _codex_quota_from_rate_limits_response((result or {}).get("result") or {})
-        return _codex_quota_for_stats(quota)
+        usage = _codex_quota_for_stats(quota)
+        if usage and email:
+            usage["_account_email"] = email
+        return usage
     except (FileNotFoundError, PermissionError, TimeoutError, OSError, ValueError):
         return None
     finally:

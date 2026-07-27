@@ -113,21 +113,37 @@ def _render_ctx_line(ctx_used, ctx_max):
     )
 
 
-def _render_turn_line(ts, input_tok, output_tok, elapsed, cost, cache_read_tokens=0):
+def _render_turn_line(
+    ts, input_tok, output_tok, elapsed, cost, cache_read_tokens=0, show_cost=True, compact=False,
+):
     cache_part = f"  ⚡{_fmt_tok(cache_read_tokens)}" if cache_read_tokens > 500 else ""
+    cost_part = f" · {_fmt_cost(cost)}" if show_cost else ""
+    if compact:
+        return (
+            f"\r\033[2K{DIM}{ts}{RESET}  🔢  "
+            f"{_fmt_tok(input_tok)}/{_fmt_tok(output_tok)} · "
+            f"{elapsed:.1f}s{cost_part}{cache_part}"
+        )
     return (
         f"\r\033[2K{DIM}{ts}{RESET}  🔢  "
         f"{_fmt_tok(input_tok)} in · {_fmt_tok(output_tok)} out · "
-        f"{elapsed:.1f}s · {_fmt_cost(cost)}{cache_part}"
+        f"{elapsed:.1f}s{cost_part}{cache_part}"
     )
 
 
-def _render_total_line(total_input, total_output, total_elapsed, total_cost):
+def _render_total_line(total_input, total_output, total_elapsed, total_cost, show_cost=True, compact=False):
+    cost_part = f" · {_fmt_cost(total_cost)}" if show_cost else ""
+    if compact:
+        return (
+            f"\r\033[2K{DIM}{'sessão':>8}{RESET}  ∑   "
+            f"{_fmt_tok(total_input)}/{_fmt_tok(total_output)} · "
+            f"{total_elapsed:.0f}s{cost_part}"
+        )
     return (
         f"\r\033[2K{DIM}{'sessão':>8}{RESET}  ∑   "
         f"{_fmt_tok(total_input)} in · "
         f"{_fmt_tok(total_output)} out · "
-        f"{total_elapsed:.0f}s · {_fmt_cost(total_cost)}"
+        f"{total_elapsed:.0f}s{cost_part}"
     )
 
 

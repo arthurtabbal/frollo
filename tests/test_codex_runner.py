@@ -10,7 +10,9 @@ from lib.runner.codex import (
     _CODEX_DONE_DRAIN_GRACE,
     _CodexAdapter,
     _CodexRenderer,
+    _codex_account_email_from_response,
     _codex_command_output_preview,
+    _codex_context_used,
     _codex_live_progress_line,
     _codex_live_progress_lines,
     _codex_normalize_command_output,
@@ -107,6 +109,15 @@ class TestCodexAdapter:
         assert rendered["limits"][0]["pct"] == 2
         assert reset
         assert reset != "1785281318"
+
+    def test_contexto_codex_nao_soma_cache_duas_vezes(self):
+        assert _codex_context_used(134800, 134500) == 134800
+        assert _codex_context_used(0, 1200) == 1200
+
+    def test_extrai_email_de_account_read(self):
+        result = {"account": {"type": "chatgpt", "email": "arthur@example.com", "planType": "pro"}}
+        assert _codex_account_email_from_response(result) == "arthur@example.com"
+        assert _codex_account_email_from_response({"account": {"type": "apiKey"}}) is None
 
     def test_mapeia_rate_limits_read_para_quota_updated(self):
         adapter = _adapter()
@@ -447,6 +458,50 @@ class TestCodexRenderer:
         out = stats_tty.read_text()
         assert "codex" in out
         assert "5%" in out
+
+    def test_write_stats_codex_compacta_custo_zero_e_nao_duplica_cache_no_ctx(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)
+        stats_tty = tmp_path / "stats-output"
+        stats_tty.write_text("")
+        (tmp_path / "stats_tty").write_text(str(stats_tty))
+        renderer, _ = self._renderer()
+        renderer.input_tokens = 134800
+        renderer.output_tokens = 595
+        renderer.cache_read_tokens = 134500
+        renderer.context_window = 258400
+        renderer.client._total_input_tokens = 0
+        renderer.client._total_output_tokens = 0
+        renderer.client._total_elapsed = 0.0
+        renderer.client._total_cost = 0.0
+
+        _write_stats(renderer.client, renderer, elapsed=435.8)
+
+        out = stats_tty.read_text()
+        assert "$0.0000" not in out
+        assert "134.8k/258.4k" in out
+        assert "269.3k/258.4k" not in out
+        assert renderer.client._last_codex_ctx == {"used": 134800, "max": 258400}
+
+    def test_usage_updated_repinta_ctx_line_sem_cache_duplicado(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)
+        stats_tty = tmp_path / "stats-output"
+        stats_tty.write_text("")
+        (tmp_path / "stats_tty").write_text(str(stats_tty))
+        renderer, _ = self._renderer()
+
+        renderer.handle({
+            "kind": "usage.updated",
+            "payload": {"usage": {
+                "input_tokens": 134800,
+                "cached_input_tokens": 134500,
+                "context_window": 258400,
+            }},
+            "provider": {},
+        })
+
+        out = stats_tty.read_text()
+        assert "\033[3;1H" in out
+        assert "134.8k/258.4k" in out
 
     def test_suprime_warning_sandbox_conhecido_no_tools(self):
         renderer, _ = self._renderer()
