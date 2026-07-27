@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from chat import ClaudeClient
+from chat import ClaudeClient, _normalize_model_choice, _short_model
 from lib.runner.capabilities import backend_profile, supports
 from lib.theme import DIM, RESET, WHITE
 
@@ -68,6 +68,18 @@ class TestPromptBadgeDeModelo:
         c = ClaudeClient(model="opus")
         assert "opus" in c._prompt()
 
+    def test_prompt_preserva_versao_do_modelo(self):
+        c = ClaudeClient(model="claude-opus-4-8")
+        assert "opus 4.8" in c._prompt()
+
+    def test_prompt_exibe_effort_e_agent_quando_definidos(self):
+        c = ClaudeClient(model="sonnet", effort="max", agent="advisor")
+        prompt = c._prompt()
+
+        assert "sonnet" in prompt
+        assert "max" in prompt
+        assert "advisor" in prompt
+
     def test_prompt_sem_modelo_nao_inclui_badge(self):
         c = ClaudeClient()
         c.observed_model = ""
@@ -80,21 +92,39 @@ class TestPromptBadgeDeModelo:
         assert "auto" in c._prompt()
 
     def test_prompt_codex_exibe_backend_e_modelo_observado(self):
-        c = ClaudeClient(backend="codex")
+        c = ClaudeClient(backend="codex", effort="high")
         c.observed_model = "gpt-5-codex"
         assert "codex" in c._prompt()
         assert "gpt-5-codex" in c._prompt()
+        assert "high" in c._prompt()
+
+
+class TestModeloVersao:
+    def test_short_model_extrai_familia_e_versao(self):
+        assert _short_model("claude-sonnet-4-6") == "sonnet 4.6"
+        assert _short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
+        assert _short_model("claude-3-5-sonnet-20241022") == "sonnet 3.5"
+        assert _short_model("claude-fable-5") == "fable 5"
+
+    def test_normalize_model_alias_com_versao(self):
+        assert _normalize_model_choice("sonnet", "4.6") == "claude-sonnet-4-6"
+        assert _normalize_model_choice("opus-4.8") == "claude-opus-4-8"
+        assert _normalize_model_choice("claude-sonnet-4-6") == "claude-sonnet-4-6"
 
 
 class TestBackendCapabilities:
     def test_claude_suporta_modelo_e_resume(self):
         profile = backend_profile("claude")
         assert supports(profile, "model_selection")
+        assert supports(profile, "effort_selection")
+        assert supports(profile, "agent_selection")
         assert supports(profile, "session_resume")
 
     def test_codex_declara_limites_atuais(self):
         profile = backend_profile("codex")
         assert not supports(profile, "model_selection")
+        assert supports(profile, "effort_selection")
+        assert not supports(profile, "agent_selection")
         assert not supports(profile, "session_resume")
         assert supports(profile, "reasoning_stream")
 

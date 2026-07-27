@@ -304,12 +304,12 @@ def _codex_input_items(message, images=None):
     return items
 
 
-def _codex_turn_start_params(thread_id, message, images=None):
+def _codex_turn_start_params(thread_id, message, images=None, effort=None):
     return {
         "threadId": thread_id,
         "approvalPolicy": "never",
         "sandboxPolicy": {"type": "dangerFullAccess"},
-        "effort": _CODEX_REASONING_EFFORT,
+        "effort": effort or _CODEX_REASONING_EFFORT,
         "summary": _CODEX_REASONING_SUMMARY,
         "input": _codex_input_items(message, images=images),
     }
@@ -1428,7 +1428,10 @@ def run_codex_turn(client, message, images=None):
             client._codex_thread_id = thread_id
 
         thread_id = client._codex_thread_id
-        proc.send("turn/start", _codex_turn_start_params(thread_id, message, images=images))
+        proc.send(
+            "turn/start",
+            _codex_turn_start_params(thread_id, message, images=images, effort=getattr(client, "effort", None)),
+        )
 
         saw_idle = False
         last_event_at = time.monotonic()

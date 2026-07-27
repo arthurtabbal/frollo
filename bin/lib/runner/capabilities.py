@@ -12,6 +12,8 @@ BACKENDS = {
         "required_cli": "claude",
         "capabilities": {
             "model_selection": True,
+            "effort_selection": True,
+            "agent_selection": True,
             "session_resume": True,
             "subscription_quota": True,
             "cost_usage": True,
@@ -28,6 +30,8 @@ BACKENDS = {
         "required_cli": "codex",
         "capabilities": {
             "model_selection": False,
+            "effort_selection": True,
+            "agent_selection": False,
             "session_resume": False,
             "subscription_quota": True,
             "cost_usage": False,

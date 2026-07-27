@@ -131,10 +131,15 @@ def _ensure_proc(client, persistent):
     Modo per-turn (default): sempre spawna um processo novo — comportamento
     inalterado desde antes da Fase 4.
     Modo persistente (`persistent: true`): reaproveita `client.proc` entre turnos
-    enquanto ele seguir vivo e tiver sido spawnado com o mesmo modo/modelo; troca de
-    `/model` ou Shift+Tab mata o processo atual e respawna com `--resume
+    enquanto ele seguir vivo e tiver sido spawnado com o mesmo modo/modelo/effort/agent; troca de
+    `/model`, `/effort`, `/agent` ou Shift+Tab mata o processo atual e respawna com `--resume
     <session_id>` — mesmo custo do modo per-turn ao trocar, nunca pior."""
-    proc_desc = (client.mode.value, getattr(client, "model", None))
+    proc_desc = (
+        client.mode.value,
+        getattr(client, "model", None),
+        getattr(client, "effort", None),
+        getattr(client, "agent", None),
+    )
     if (persistent and client.proc is not None and client.proc.poll() is None
             and getattr(client, "_proc_desc", None) == proc_desc):
         return client.proc, True
@@ -154,6 +159,10 @@ def _ensure_proc(client, persistent):
         cmd.append("--dangerously-skip-permissions")
     if getattr(client, "model", None):
         cmd += ["--model", client.model]
+    if getattr(client, "effort", None):
+        cmd += ["--effort", client.effort]
+    if getattr(client, "agent", None):
+        cmd += ["--agent", client.agent]
     if client.first_turn and client.resume_id is not None:
         if client.resume_id:
             cmd += ["--resume", client.resume_id]

@@ -21,6 +21,9 @@ def fake_client():
     client.mode.value = "normal"
     client.first_turn = True
     client.resume_id = None
+    client.model = None
+    client.effort = None
+    client.agent = None
     client.nvim_pane = ""
     client.tmux_srv = ""
     client.editor_bin = ""
@@ -50,6 +53,20 @@ class TestClaudeNaoEncontrado:
             _ensure_proc(fake_client, persistent=False)
 
         assert popen.call_args.args[0][0] == "/tmp/claude-custom"
+
+    def test_spawn_passa_modelo_effort_e_agent(self, fake_client):
+        fake_client.model = "claude-sonnet-4-6"
+        fake_client.effort = "max"
+        fake_client.agent = "advisor"
+        proc = MagicMock()
+
+        with patch("lib.runner.subprocess.Popen", return_value=proc) as popen:
+            _ensure_proc(fake_client, persistent=False)
+
+        cmd = popen.call_args.args[0]
+        assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
+        assert cmd[cmd.index("--effort") + 1] == "max"
+        assert cmd[cmd.index("--agent") + 1] == "advisor"
 
     def test_spawn_failed_registra_diagnostico_util(self, fake_client):
         with patch("lib.runner.subprocess.Popen", side_effect=FileNotFoundError), \

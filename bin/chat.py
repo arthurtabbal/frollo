@@ -25,18 +25,67 @@ from lib.theme import (
 )
 
 
+MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_MODEL = "sonnet"
+DEFAULT_EFFORT = "high"
+
+
+def _model_family_version(name):
+    if not name:
+        return "", ""
+    n = name.lower().strip().replace(".", "-")
+    parts = [p for p in n.split("-") if p]
+    family_idx = None
+    for i, part in enumerate(parts):
+        if part in MODEL_ALIASES:
+            family_idx = i
+            break
+    if family_idx is None:
+        return "", ""
+    family = parts[family_idx]
+    version_parts = []
+    for part in parts[family_idx + 1:]:
+        if not part.isdigit() or len(part) >= 8:
+            break
+        version_parts.append(part)
+        if len(version_parts) == 2:
+            break
+    if not version_parts:
+        prev = []
+        for part in reversed(parts[:family_idx]):
+            if not part.isdigit() or len(part) >= 8:
+                break
+            prev.append(part)
+            if len(prev) == 2:
+                break
+        version_parts = list(reversed(prev))
+    return family, ".".join(version_parts)
+
+
 def _short_model(name):
-    """Reduz 'claude-opus-4-7-20251022' → 'opus'. Aceita aliases já curtos."""
+    """Reduz ids longos para 'opus 4.8', preservando a versão quando existir."""
     if not name:
         return ""
-    n = name.lower()
-    for alias in ("opus", "sonnet", "haiku"):
-        if alias in n:
-            return alias
+    family, version = _model_family_version(name)
+    if family:
+        return f"{family} {version}" if version else family
     return name
 
 
-MODEL_ALIASES = ("opus", "sonnet", "haiku")
+def _normalize_model_choice(name, version=None):
+    """Aceita alias, alias+versão ou ID completo do Claude CLI."""
+    model = (name or "").strip().lower()
+    if not model:
+        return ""
+    ver = (version or "").strip().lower().lstrip("v").replace(".", "-")
+    if ver and model in MODEL_ALIASES:
+        return f"claude-{model}-{ver}"
+    match = re.fullmatch(rf"({'|'.join(MODEL_ALIASES)})[- ]v?(\d+(?:[.-]\d+)*)", model)
+    if match:
+        return f"claude-{match.group(1)}-{match.group(2).replace('.', '-')}"
+    return model
+
 from lib.session import pick_session
 from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
@@ -61,7 +110,7 @@ MODES = [Mode.NORMAL, Mode.AUTO]
 
 
 class ClaudeClient:
-    def __init__(self, resume_id=None, model=None, backend="claude"):
+    def __init__(self, resume_id=None, model=None, backend="claude", effort=None, agent=None):
         self.resume_id = resume_id        # None = nova sessão, "" = --continue, "<id>" = --resume <id>
         self.session_id = None            # preenchido após o primeiro turno via evento result
         self.first_turn = True
@@ -69,6 +118,8 @@ class ClaudeClient:
         self.backend_profile = backend_profile(backend)
         self.mode = Mode.NORMAL
         self.model = model                # None = default do claude CLI; senão alias/id passado pra --model
+        self.effort = effort              # None = default do backend; senão passado para --effort/turn.start
+        self.agent = agent                # None = default do Claude; senão passado para --agent
         self.observed_model = ""          # preenchido via stream events (message_start.model)
         self.cwd = os.getcwd()
         self.nvim_pane = os.environ.get("CLAUDE_NVIM_PANE", "")
@@ -255,9 +306,24 @@ class ClaudeClient:
         """Sincroniza self.mode com o _mode_ref compartilhado com InputReader."""
         self.mode = self._mode_ref[0]
 
+    def _model_for_display(self):
+        if self._supports("model_selection"):
+            return self.model or self.observed_model
+        return self.observed_model
+
+    def _status_parts(self):
+        parts = []
+        model = _short_model(self._model_for_display())
+        if model:
+            parts.append(model)
+        if self._supports("effort_selection") and self.effort:
+            parts.append(self.effort)
+        if self._supports("agent_selection") and self.agent:
+            parts.append(self.agent)
+        return parts
+
     def _update_model_title(self):
-        """Fixa o modelo atual no título da borda do pane de chat (chrome do tmux —
-        sempre visível, não rola com o output). Mostra o pedido ou, na falta, o observado."""
+        """Fixa status do backend no título da borda do pane de chat (chrome do tmux)."""
         if not self.tmux_srv:
             return
         pane = os.environ.get("TMUX_PANE", "")  # tmux exporta o pane do próprio cliente
@@ -268,9 +334,11 @@ class ClaudeClient:
                 return
         if not pane:
             return
-        model = _short_model(self.observed_model if not self._supports("model_selection") else (self.model or self.observed_model)) or "?"
         label = self._backend_profile()["label"]
-        title = f"▲ chat · {label} · {model}" if label != "claude" else f"▲ chat · {model}"
+        parts = self._status_parts() or ["?"]
+        if label != "claude":
+            parts.insert(0, label)
+        title = "▲ chat · " + " · ".join(parts)
         try:
             subprocess.run(
                 ["tmux", "-L", self.tmux_srv, "select-pane", "-t", pane, "-T", title],
@@ -289,14 +357,8 @@ class ClaudeClient:
             badge = f"{DIM}normal{RESET}"
         profile = self._backend_profile()
         provider_badge = f"{PURPLE}{profile['label']}{RESET} " if profile["label"] != "claude" else ""
-        model_display = _short_model(
-            self.observed_model if not self._supports("model_selection") else (self.model or self.observed_model)
-        )
-        if model_display:
-            model_badge = f"{PURPLE}{model_display}{RESET} "
-        else:
-            model_badge = ""
-        return f"{provider_badge}{model_badge}{badge} {WHITE}>_{RESET} "
+        status_badges = "".join(f"{PURPLE}{part}{RESET} " for part in self._status_parts())
+        return f"{provider_badge}{status_badges}{badge} {WHITE}>_{RESET} "
 
     def _print_header(self):
         R = RESET
@@ -495,14 +557,73 @@ class ClaudeClient:
                     parts = user_input.strip().split(maxsplit=1)
                     if len(parts) == 1:
                         current = self.model or self.observed_model or "default"
-                        sys.stdout.write(f"\n{DIM}modelo atual: {RESET}{_short_model(current) or current}\n")
+                        shown = _short_model(current) or current
+                        detail = f"  {DIM}({current}){RESET}" if shown != current else ""
+                        sys.stdout.write(f"\n{DIM}modelo atual: {RESET}{shown}{detail}\n")
+                        sys.stdout.flush()
+                    else:
+                        tokens = parts[1].strip().split()
+                        choice = _normalize_model_choice(tokens[0], tokens[1] if len(tokens) > 1 else None)
+                        self.model = choice
+                        self._update_model_title()
+                        sys.stdout.write(
+                            f"\n{DIM}modelo → {RESET}{PURPLE}{_short_model(choice) or choice}{RESET}"
+                            f"{DIM}  ({choice}, próximo turno){RESET}\n"
+                        )
+                        sys.stdout.flush()
+                    continue
+                if user_input.strip().startswith("/effort"):
+                    if not self._supports("effort_selection"):
+                        sys.stdout.write(
+                            f"\n{DIM}backend {self._backend_profile()['label']} não suporta troca de effort pelo Frollo{RESET}\n"
+                        )
+                        sys.stdout.flush()
+                        continue
+                    parts = user_input.strip().split(maxsplit=1)
+                    if len(parts) == 1:
+                        current = self.effort or f"default do {self._backend_profile()['label']}"
+                        sys.stdout.write(f"\n{DIM}effort atual: {RESET}{current}\n")
                         sys.stdout.flush()
                     else:
                         choice = parts[1].strip().lower()
-                        self.model = choice
+                        if choice not in EFFORT_LEVELS:
+                            sys.stdout.write(
+                                f"\n{YELLOW}effort inválido: {choice}{RESET}  "
+                                f"{DIM}use {'/'.join(EFFORT_LEVELS)}{RESET}\n"
+                            )
+                            sys.stdout.flush()
+                            continue
+                        self.effort = choice
                         self._update_model_title()
-                        sys.stdout.write(f"\n{DIM}modelo → {RESET}{PURPLE}{_short_model(choice) or choice}{RESET}{DIM} (próximo turno){RESET}\n")
+                        sys.stdout.write(f"\n{DIM}effort → {RESET}{PURPLE}{choice}{RESET}{DIM} (próximo turno){RESET}\n")
                         sys.stdout.flush()
+                    continue
+                if user_input.strip().startswith("/agent") or user_input.strip() == "/advisor":
+                    if not self._supports("agent_selection"):
+                        sys.stdout.write(
+                            f"\n{DIM}backend {self._backend_profile()['label']} não suporta agent/advisor pelo Frollo{RESET}\n"
+                        )
+                        sys.stdout.flush()
+                        continue
+                    if user_input.strip() == "/advisor":
+                        choice = "advisor"
+                    else:
+                        parts = user_input.strip().split(maxsplit=1)
+                        if len(parts) == 1:
+                            current = self.agent or "default"
+                            sys.stdout.write(f"\n{DIM}agent atual: {RESET}{current}\n")
+                            sys.stdout.flush()
+                            continue
+                        choice = parts[1].strip().lower()
+                    if choice in ("default", "none", "off"):
+                        self.agent = None
+                        shown = "default"
+                    else:
+                        self.agent = choice
+                        shown = choice
+                    self._update_model_title()
+                    sys.stdout.write(f"\n{DIM}agent → {RESET}{PURPLE}{shown}{RESET}{DIM} (próximo turno){RESET}\n")
+                    sys.stdout.flush()
                     continue
                 if user_input.strip() == "/new":
                     sys.stdout.write(f"{DIM}novo contexto…{RESET}\n")
@@ -578,7 +699,15 @@ if __name__ == "__main__":
         p.add_argument("--configure", action="store_true",
                        help="reconfigura preferências (typewriter, gárgulas, stats)")
         p.add_argument("--model", metavar="NAME",
-                       help="modelo do claude: alias (opus|sonnet|haiku) ou ID completo")
+                       help="modelo: alias (opus|sonnet|haiku|fable) ou ID completo")
+        p.add_argument("--model-version", metavar="VERSION",
+                       help="versão do alias em --model/shortcut (ex: 4.6 vira claude-sonnet-4-6)")
+        p.add_argument("--effort", choices=EFFORT_LEVELS, default=DEFAULT_EFFORT,
+                       help=f"nível de esforço/reasoning (default: {DEFAULT_EFFORT})")
+        p.add_argument("--agent", metavar="NAME",
+                       help="agent do Claude Code para a sessão (ex: advisor)")
+        p.add_argument("--advisor", dest="agent_alias", action="store_const", const="advisor",
+                       help="atalho para --agent advisor")
         p.add_argument("--backend", choices=backend_names(), default="claude",
                        help="backend experimental: claude (default) ou codex")
         mg = p.add_mutually_exclusive_group()
@@ -588,18 +717,27 @@ if __name__ == "__main__":
         args = p.parse_args()
 
         if args.model and args.model_alias:
-            p.error("use --model OU um shortcut (--opus/--sonnet/--haiku), não ambos")
+            p.error("use --model OU um shortcut (--opus/--sonnet/--haiku/--fable), não ambos")
+        if args.agent and args.agent_alias:
+            p.error("use --agent OU --advisor, não ambos")
         profile = backend_profile(args.backend)
         if not supports(profile, "model_selection"):
-            if args.model or args.model_alias:
+            if args.model or args.model_alias or args.model_version:
                 p.error(f"--backend {args.backend} ainda não suporta seleção de modelo")
+        if not supports(profile, "effort_selection") and args.effort:
+            p.error(f"--backend {args.backend} ainda não suporta seleção de effort")
+        if not supports(profile, "agent_selection"):
+            if args.agent or args.agent_alias:
+                p.error(f"--backend {args.backend} ainda não suporta seleção de agent")
         if not supports(profile, "session_resume"):
             if args.resume is not None:
                 p.error(f"--backend {args.backend} ainda não suporta --resume")
         if not supports(profile, "model_selection"):
             model = None
         else:
-            model = args.model or args.model_alias or "sonnet"
+            model = _normalize_model_choice(args.model or args.model_alias or DEFAULT_MODEL, args.model_version)
+        effort = args.effort if supports(profile, "effort_selection") else None
+        agent = (args.agent or args.agent_alias) if supports(profile, "agent_selection") else None
 
         resume_id = None
         if args.resume is not None:
@@ -612,7 +750,7 @@ if __name__ == "__main__":
         if args.configure or _first_run:
             run_configure(first_run=_first_run)
 
-        ClaudeClient(resume_id=resume_id, model=model, backend=args.backend).chat()
+        ClaudeClient(resume_id=resume_id, model=model, backend=args.backend, effort=effort, agent=agent).chat()
     except SystemExit:
         raise
     except (KeyboardInterrupt, EOFError):

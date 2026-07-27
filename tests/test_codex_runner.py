@@ -95,6 +95,11 @@ class TestCodexAdapter:
         assert params["summary"] == "detailed"
         assert params["input"] == [{"type": "text", "text": "oi"}]
 
+    def test_turn_start_params_aceitam_effort_do_cliente(self):
+        params = _codex_turn_start_params("thread-1", "oi", effort="max")
+
+        assert params["effort"] == "max"
+
     def test_quota_codex_formata_reset_epoch_sem_printar_inteiro_cru(self):
         rendered = _codex_quota_for_stats({"used_percent": 2, "resets_at": 1785281318})
         reset = rendered["limits"][0]["reset"]

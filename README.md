@@ -91,6 +91,8 @@ cd frollo
 ```bash
 frollo                        # full layout in the current directory
 frollo /path/to/project       # full layout in a specific project
+frollo --model sonnet --model-version 4.6 --effort high
+frollo --advisor              # Claude Code agent shortcut
 frollo --backend codex        # experimental Codex App Server backend
 ./bin/observe.sh              # passive observer only: the raw event stream,
                               # from every Claude Code session on the machine
@@ -116,7 +118,9 @@ The full layout opens a tmux session:
 | `/paste` | Open `$EDITOR` for long text; sends on close |
 | `/refresh` | Restart, resuming the current session |
 | `/new` | Restart with a fresh context |
-| `/model [name]` | Show or switch model (`opus`/`sonnet`/`haiku` or full ID) |
+| `/model [name] [version]` | Show or switch model (`opus`/`sonnet`/`haiku`/`fable`, optional version, or full ID) |
+| `/effort [level]` | Show or switch effort (`low`/`medium`/`high`/`xhigh`/`max`) |
+| `/agent [name]` / `/advisor` | Show or switch Claude Code agent; `/advisor` selects `advisor` |
 | `Shift+Tab` | Toggle Normal ↔ Auto mode |
 | `Alt+Enter` | Insert newline (multiline input) |
 | `Ctrl+V` | Paste an image from the clipboard |
