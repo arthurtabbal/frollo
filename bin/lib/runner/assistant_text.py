@@ -33,8 +33,8 @@ class AssistantTextRenderer:
             return
         if self._starts_new_item(item_id):
             self._flush_markdown()
-            if self.last_char != "\n":
-                self._push_raw_separator("\n\n")
+            separator = "\n" if self.last_char == "\n" else "\n\n"
+            self._push_raw_separator(separator)
 
         self.item_id = item_id or self.item_id
         self.client._streaming_text = True
@@ -58,6 +58,7 @@ class AssistantTextRenderer:
             self.client._streaming_text = False
             if add_newline_if_mid_line and col_is_mid_line():
                 self.render.push_stdout("\n", delay=0)
+                self.last_char = "\n"
                 self.render.join()
 
     def _starts_new_item(self, item_id):

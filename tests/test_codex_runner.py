@@ -927,6 +927,39 @@ class TestCodexRenderer:
         ]
         assert renderer.client._last_response_text == "primeiro bloco.\n\nsegundo bloco."
 
+    def test_assistant_delta_apos_completed_nao_insere_quebra_extra(self):
+        renderer, render = self._renderer()
+
+        with patch("lib.runner.assistant_text.col_is_mid_line", return_value=True):
+            renderer.handle({
+                "kind": "message.assistant.delta",
+                "item_id": "msg-1",
+                "payload": {"delta": "primeiro bloco."},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "message.assistant.completed",
+                "item_id": "msg-1",
+                "payload": {},
+                "provider": {},
+            })
+            renderer.handle({
+                "kind": "message.assistant.delta",
+                "item_id": "msg-2",
+                "payload": {"delta": "segundo bloco."},
+                "provider": {},
+            })
+
+        pushed = [call.args[0] for call in render.push_stdout.call_args_list]
+        assert pushed == [
+            CHAT_FG + "primeiro bloco." + RESET,
+            RESET,
+            "\n",
+            CHAT_FG + "\n" + RESET,
+            CHAT_FG + "segundo bloco." + RESET,
+        ]
+        assert renderer.client._last_response_text == "primeiro bloco.\nsegundo bloco."
+
     def test_assistant_delta_do_mesmo_item_nao_insere_quebra(self):
         renderer, render = self._renderer()
 
