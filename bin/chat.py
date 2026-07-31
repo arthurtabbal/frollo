@@ -99,7 +99,22 @@ from lib.usage import fetch_usage
 RUNDIR       = Path(os.environ.get("CLAUDE_RUNDIR", "/tmp/claude-client"))
 THINKING_LOG = RUNDIR / "thinking"
 TOOLS_LOG    = RUNDIR / "tools"
-USAGE_REFRESH_SECONDS = 30.0
+USAGE_REFRESH_DEFAULT_SECONDS = 5 * 60.0
+USAGE_REFRESH_MIN_SECONDS = 60.0
+
+
+def _usage_refresh_seconds():
+    raw = os.environ.get("FROLLO_USAGE_REFRESH_SECONDS")
+    if not raw:
+        return USAGE_REFRESH_DEFAULT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return USAGE_REFRESH_DEFAULT_SECONDS
+    return max(USAGE_REFRESH_MIN_SECONDS, value)
+
+
+USAGE_REFRESH_SECONDS = _usage_refresh_seconds()
 
 
 class Mode(Enum):
@@ -485,6 +500,104 @@ class ClaudeClient:
         out_path.write_text(content)
         return content
 
+    def _interrupted_context_path(self):
+        return RUNDIR / "interrupted_context.md"
+
+    def _strip_ansi(self, text):
+        return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[a-zA-Z]', '', text or '')
+
+    def _read_log_since(self, path, offset):
+        try:
+            size = path.stat().st_size
+            start = offset if offset <= size else 0
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start)
+                return self._strip_ansi(f.read()).strip()
+        except OSError:
+            return ""
+
+    def _begin_interrupted_turn_capture(self, message, images=None):
+        self._interrupted_turn_capture = {
+            "message": message,
+            "attached_context": getattr(self, "_attached_interrupted_context", ""),
+            "images": len(images or []),
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "tools_offset": TOOLS_LOG.stat().st_size if TOOLS_LOG.exists() else 0,
+            "thinking_offset": THINKING_LOG.stat().st_size if THINKING_LOG.exists() else 0,
+        }
+
+    def _finish_interrupted_turn_capture(self):
+        self._interrupted_turn_capture = None
+
+    def _preserve_interrupted_turn(self, reason="ctrl_c"):
+        capture = getattr(self, "_interrupted_turn_capture", None)
+        if not capture:
+            return False
+
+        sections = [
+            "=== turno anterior interrompido ===",
+            f"motivo: {reason}",
+            f"iniciado: {capture.get('started_at', '')}",
+            "",
+            "=== mensagem do usuário nesse turno ===",
+            (capture.get("message") or "").strip(),
+        ]
+        attached_context = (capture.get("attached_context") or "").strip()
+        if attached_context:
+            sections += ["", "=== contexto interrompido já pendente antes desse turno ===", attached_context]
+        if capture.get("images"):
+            sections += ["", f"[{capture['images']} imagem(ns) foram enviadas nesse turno interrompido]"]
+
+        last_response = getattr(self, "_last_response_text", "").strip()
+        if last_response:
+            sections += ["", "=== resposta parcial já exibida ===", last_response]
+
+        tools = self._read_log_since(TOOLS_LOG, capture.get("tools_offset", 0))
+        if tools:
+            sections += ["", "=== tools observadas ===", tools]
+
+        thinking = self._read_log_since(THINKING_LOG, capture.get("thinking_offset", 0))
+        if thinking:
+            sections += ["", "=== thinking visível no pane ===", thinking]
+
+        content = "\n".join(sections).strip() + "\n"
+        try:
+            path = self._interrupted_context_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        except OSError:
+            return False
+        return True
+
+    def _attach_interrupted_context(self, message):
+        path = self._interrupted_context_path()
+        try:
+            pending = path.read_text().strip()
+        except OSError:
+            self._attached_interrupted_context = ""
+            return message
+        if not pending:
+            self._attached_interrupted_context = ""
+            return message
+        self._attached_interrupted_context = pending
+        return (
+            "[contexto local preservado pelo Frollo: o turno anterior foi interrompido antes de "
+            "o backend finalizar/persistir a resposta. Use isto para manter continuidade; não "
+            "repita esse bloco ao usuário.]\n\n"
+            f"{pending}\n\n"
+            "=== nova mensagem do usuário ===\n"
+            f"{message}"
+        )
+
+    def _clear_interrupted_context(self):
+        try:
+            self._interrupted_context_path().unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        self._attached_interrupted_context = ""
+
     def _startup_stats(self):
         """No startup de um resume, restaura stats do último turno e atualiza cota async."""
         if not self._supports("session_resume"):
@@ -537,9 +650,20 @@ class ClaudeClient:
         self._ensure_usage_updater()
 
     def _run_turn(self, message, images=None):
-        if self._backend_profile()["label"] == "codex":
-            return run_codex_turn(self, message, images=images)
-        return run_turn(self, message, images=images)
+        user_message = message
+        outbound_message = self._attach_interrupted_context(user_message)
+        self._begin_interrupted_turn_capture(user_message, images=images)
+        try:
+            if self._backend_profile()["label"] == "codex":
+                result = run_codex_turn(self, outbound_message, images=images)
+            else:
+                result = run_turn(self, outbound_message, images=images)
+        except KeyboardInterrupt:
+            raise
+        else:
+            self._finish_interrupted_turn_capture()
+            self._clear_interrupted_context()
+            return result
 
     def chat(self):
         self._print_header()
@@ -700,11 +824,15 @@ class ClaudeClient:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
                     self.proc.wait()
+                preserved = self._preserve_interrupted_turn()
                 # durante typewriter: preserva a linha e desce; durante spinner: limpa a linha
                 if self._streaming_text:
                     sys.stdout.write(f"\n{DIM}cancelado{RESET}\n")
                 else:
                     sys.stdout.write(f"\r\033[2K{DIM}cancelado{RESET}\n")
+                if preserved:
+                    sys.stdout.write(f"{DIM}contexto parcial preservado para o próximo turno{RESET}\n")
+                self._finish_interrupted_turn_capture()
                 self._streaming_text = False
                 sys.stdout.flush()
                 continue
@@ -716,10 +844,14 @@ class ClaudeClient:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
                     self.proc.wait()
+                preserved = self._preserve_interrupted_turn(reason="erro")
+                self._finish_interrupted_turn_capture()
                 errors.report_exception(
                     "frollo", e, severity="fatal", code="unexpected",
                     tmux_srv=self.tmux_srv,
                 )
+                if preserved:
+                    sys.stdout.write(f"{DIM}contexto parcial preservado para o próximo turno{RESET}\n")
                 sys.stdout.write(f"{DIM}histórico completo em {errors.ERROR_LOG}{RESET}\n")
                 sys.stdout.flush()
                 continue

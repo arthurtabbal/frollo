@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from chat import ClaudeClient, _normalize_model_choice, _short_model
+from chat import ClaudeClient, _normalize_model_choice, _short_model, _usage_refresh_seconds
 from lib.runner.capabilities import backend_profile, supports
 from lib.theme import DIM, RESET, WHITE
 
@@ -162,3 +162,96 @@ class TestBackendCapabilities:
         assert run.call_args.args[0] == [
             "tmux", "-L", "srv", "select-pane", "-t", "%42", "-T", "〰 stats · codex@example.com",
         ]
+
+
+class TestUsageRefresh:
+    def test_intervalo_default_de_cota_e_conservador(self, monkeypatch):
+        monkeypatch.delenv("FROLLO_USAGE_REFRESH_SECONDS", raising=False)
+
+        assert _usage_refresh_seconds() == 300.0
+
+    def test_intervalo_de_cota_aceita_override_com_piso(self, monkeypatch):
+        monkeypatch.setenv("FROLLO_USAGE_REFRESH_SECONDS", "10")
+
+        assert _usage_refresh_seconds() == 60.0
+
+    def test_intervalo_de_cota_ignora_override_invalido(self, monkeypatch):
+        monkeypatch.setenv("FROLLO_USAGE_REFRESH_SECONDS", "quasimodo")
+
+        assert _usage_refresh_seconds() == 300.0
+
+
+class TestInterruptedContext:
+    def test_preserva_contexto_local_do_turno_cancelado(self, client):
+        import chat
+
+        chat.THINKING_LOG.write_text("thinking antigo\n")
+        chat.TOOLS_LOG.write_text("tools antigo\n")
+        client._begin_interrupted_turn_capture("pergunta interrompida", images=[{"media_type": "image/png"}])
+        client._last_response_text = "resposta parcial"
+        chat.THINKING_LOG.write_text(chat.THINKING_LOG.read_text() + "\x1b[31mpensei nisso\x1b[0m\n")
+        chat.TOOLS_LOG.write_text(chat.TOOLS_LOG.read_text() + "\x1b[32mrodei uma tool\x1b[0m\n")
+
+        assert client._preserve_interrupted_turn()
+
+        content = client._interrupted_context_path().read_text()
+        assert "pergunta interrompida" in content
+        assert "resposta parcial" in content
+        assert "pensei nisso" in content
+        assert "rodei uma tool" in content
+        assert "thinking antigo" not in content
+        assert "\x1b[" not in content
+        assert "1 imagem" in content
+
+    def test_preserva_tools_mesmo_se_pane_foi_truncado_no_turno(self, client):
+        import chat
+
+        chat.TOOLS_LOG.write_text("tools antigo que sera truncado")
+        client._begin_interrupted_turn_capture("pergunta")
+        chat.TOOLS_LOG.write_text("tool depois do clear\n")
+
+        client._preserve_interrupted_turn()
+
+        assert "tool depois do clear" in client._interrupted_context_path().read_text()
+
+    def test_anexa_contexto_interrompido_no_proximo_turno_e_limpa_arquivo(self, client):
+        import chat
+
+        client.backend_profile = backend_profile("claude")
+        client._interrupted_context_path().write_text("=== turno anterior interrompido ===\nresposta parcial\n")
+
+        with patch("chat.run_turn", return_value=False) as run:
+            result = client._run_turn("continua daqui")
+
+        sent = run.call_args.args[1]
+        assert result is False
+        assert "resposta parcial" in sent
+        assert "continua daqui" in sent
+        assert not client._interrupted_context_path().exists()
+
+    def test_turno_cancelado_mantem_captura_para_o_handler_do_ctrl_c(self, client):
+        client.backend_profile = backend_profile("claude")
+
+        with patch("chat.run_turn", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                client._run_turn("para no meio")
+
+        assert client._interrupted_turn_capture["message"] == "para no meio"
+
+    def test_cancelamento_repetido_nao_aninha_contexto_injetado(self, client):
+        client.backend_profile = backend_profile("claude")
+        client._interrupted_context_path().write_text("=== turno anterior interrompido ===\nprimeiro parcial\n")
+
+        with patch("chat.run_turn", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                client._run_turn("segunda tentativa")
+
+        client._last_response_text = "segundo parcial"
+        client._preserve_interrupted_turn()
+        content = client._interrupted_context_path().read_text()
+
+        assert "primeiro parcial" in content
+        assert "segunda tentativa" in content
+        assert "segundo parcial" in content
+        assert "contexto local preservado pelo Frollo" not in content
+        assert content.count("=== turno anterior interrompido ===") == 2
