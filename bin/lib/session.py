@@ -30,16 +30,34 @@ def _first_user_text(ev):
     """Extrai texto de um evento de sessão, cobrindo dois schemas conhecidos:
     queue-operation/enqueue (schema antigo) e message.content de type=="user"
     (schema atual, string ou lista de blocos). Retorna "" se não reconhecido."""
+    if ev.get("isMeta"):
+        return ""
+
     if ev.get("type") == "queue-operation" and ev.get("operation") == "enqueue":
-        return (ev.get("content") or "").strip()
+        content = (ev.get("content") or "").strip()
+        if _is_session_preview_noise(content):
+            return ""
+        return content
+
     if ev.get("type") == "user":
         msg_content = ev.get("message", {}).get("content", "")
         if isinstance(msg_content, list):
             msg_content = next(
                 (b.get("text", "") for b in msg_content if b.get("type") == "text"), ""
             )
-        return (msg_content or "").strip()
+        content = (msg_content or "").strip()
+        if _is_session_preview_noise(content):
+            return ""
+        return content
     return ""
+
+
+def _is_session_preview_noise(content):
+    """Mensagens internas do CLI não devem virar título no picker."""
+    return content.startswith((
+        "<local-command-caveat>",
+        "<command-name>",
+    ))
 
 
 def _load_sessions(sessions_dir, limit=20):

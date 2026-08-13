@@ -417,4 +417,4 @@ def run_turn(client, message, images=None):
             _resize_thinking(client.tmux_srv, "idle")
         termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
     client.first_turn = False
-    return turn.perm_approved if turn is not None else False
+    return turn.retry_requested if turn is not None else False

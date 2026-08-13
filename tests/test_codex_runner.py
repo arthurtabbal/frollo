@@ -1004,3 +1004,37 @@ class TestCodexRenderer:
         pushed = "".join(call.args[0] for call in render.push_stdout.call_args_list)
         assert "\033[1mforte" in pushed
         assert renderer.client._last_response_text == "isso é **forte**."
+
+    def test_assistant_delta_formata_tabela_markdown_no_finish(self):
+        renderer, render = self._renderer()
+
+        for delta in [
+            "| Item | Estado | Observação |\n",
+            "|---|---:|---|\n",
+            "| Typewriter | OK | Deve renderizar em fluxo |\n",
+            "| Markdown | OK | Tabela alinhada no terminal |",
+        ]:
+            renderer.handle({
+                "kind": "message.assistant.delta",
+                "item_id": "msg-1",
+                "payload": {"delta": delta},
+                "provider": {},
+            })
+
+        renderer.handle({
+            "kind": "turn.finished",
+            "item_id": "turn-1",
+            "payload": {"status": "completed"},
+            "provider": {},
+        })
+
+        pushed = "".join(call.args[0] for call in render.push_stdout.call_args_list)
+        assert "|---|---:|---|" not in pushed
+        assert "-----------+--------+----------------------------" in pushed
+        assert "Markdown   |     OK | Tabela alinhada no terminal" in pushed
+        assert renderer.client._last_response_text == (
+            "| Item | Estado | Observação |\n"
+            "|---|---:|---|\n"
+            "| Typewriter | OK | Deve renderizar em fluxo |\n"
+            "| Markdown | OK | Tabela alinhada no terminal |"
+        )

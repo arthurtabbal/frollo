@@ -263,6 +263,52 @@ class TestToolResultPermissao:
         assert fake_client._retry_context is None
 
 
+class TestToolResultPerguntaUsuario:
+    def test_tool_de_pergunta_falha_e_vira_retry_com_resposta(self, fake_client):
+        turn = _turn(fake_client)
+        turn._tool_names["tu1"] = "AskUserQuestion"
+        turn._tool_inputs["tu1"] = {"question": "Qual caminho prefere?"}
+        with patch("lib.runner.turn.log_tool_result") as mock_log_result, \
+             patch("lib.runner.turn._handle_user_question", return_value="o caminho curto") as mock_question:
+            turn.handle_event({
+                "type": "user",
+                "message": {"content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "is_error": True,
+                    "content": [{
+                        "type": "text",
+                        "text": "AskUserQuestion is not available in this environment",
+                    }],
+                }]},
+            })
+
+        mock_question.assert_called_once()
+        mock_log_result.assert_called_once()
+        assert turn.retry_requested is True
+        assert "o caminho curto" in fake_client._retry_context
+        assert turn._suppress_perm_text is True
+
+    def test_task_prompt_com_erro_nao_e_confundido_com_pergunta(self, fake_client):
+        turn = _turn(fake_client)
+        turn._tool_names["tu1"] = "Task"
+        turn._tool_inputs["tu1"] = {"prompt": "investigue"}
+        with patch("lib.runner.turn.log_tool_result"), \
+             patch("lib.runner.turn._handle_user_question") as mock_question:
+            turn.handle_event({
+                "type": "user",
+                "message": {"content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "is_error": True,
+                    "content": [{"type": "text", "text": "subagent failed"}],
+                }]},
+            })
+
+        mock_question.assert_not_called()
+        assert turn.retry_requested is False
+
+
 class TestResult:
     def test_captura_session_id_custo_e_tokens(self, fake_client):
         turn = _turn(fake_client)

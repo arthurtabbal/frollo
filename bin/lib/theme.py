@@ -135,6 +135,11 @@ class MdBuffer:
         # Heading in progress: don't flush until the line ends with \n
         if re.search(r'(?:^|\n)#{1,3} [^\n]*\Z', t):
             return False
+        # Pipe tables only become recognizable after the separator row arrives.
+        # Streaming chunks can split a row before the closing pipe, so hold a
+        # trailing table candidate as soon as the line starts like a pipe table.
+        if _ends_with_tableish_line(t):
+            return False
         if len(re.findall(r'\*\*', t)) % 2 != 0:
             return False
         if re.sub(r'\*\*', '', t).count('*') % 2 != 0:
@@ -157,12 +162,131 @@ def _render_code_block(m):
     return label + lines + '\n'
 
 
+def _split_table_row(line):
+    stripped = line.strip()
+    if not stripped or "|" not in stripped:
+        return None
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = re.split(r'(?<!\\)\|', stripped)
+    if len(cells) < 2:
+        return None
+    return [cell.replace(r"\|", "|").strip() for cell in cells]
+
+
+def _is_table_separator(cells):
+    if not cells or len(cells) < 2:
+        return False
+    return all(re.fullmatch(r':?-{3,}:?', cell.replace(" ", "")) for cell in cells)
+
+
+def _table_alignments(cells):
+    align = []
+    for cell in cells:
+        marker = cell.replace(" ", "")
+        if marker.startswith(":") and marker.endswith(":"):
+            align.append("center")
+        elif marker.endswith(":"):
+            align.append("right")
+        else:
+            align.append("left")
+    return align
+
+
+def _plain_markdown_width(text):
+    text = re.sub(r'`([^`\n]+)`', r'\1', text)
+    text = re.sub(r'\*\*([^*\n]+)\*\*', r'\1', text)
+    text = re.sub(r'__([^_\n]+)__', r'\1', text)
+    text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'\1', text)
+    text = re.sub(r'(?<!\w)_([^_\n]+)_(?!\w)', r'\1', text)
+    return len(text)
+
+
+def _pad_cell(text, width, align):
+    visible = _plain_markdown_width(text)
+    pad = max(0, width - visible)
+    if align == "right":
+        return (" " * pad) + text
+    if align == "center":
+        left = pad // 2
+        return (" " * left) + text + (" " * (pad - left))
+    return text + (" " * pad)
+
+
+def _render_table(header, alignments, rows):
+    cols = len(header)
+
+    def normalize(row):
+        return (row + [""] * cols)[:cols]
+
+    table_rows = [normalize(header)] + [normalize(row) for row in rows]
+    widths = [
+        max(_plain_markdown_width(row[col]) for row in table_rows)
+        for col in range(cols)
+    ]
+    sep = "  " + DIM + "-+-".join("-" * width for width in widths) + RESET + CHAT_FG
+    rendered = [
+        "  " + " | ".join(BOLD + _pad_cell(header[col], widths[col], alignments[col]) + RESET + CHAT_FG
+                           for col in range(cols)),
+        sep,
+    ]
+    for row in rows:
+        row = normalize(row)
+        rendered.append("  " + " | ".join(
+            _pad_cell(row[col], widths[col], alignments[col])
+            for col in range(cols)
+        ))
+    return rendered
+
+
+def _format_tables(text):
+    lines = text.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        header = _split_table_row(lines[i])
+        separator = _split_table_row(lines[i + 1]) if i + 1 < len(lines) else None
+        if header and separator and len(header) == len(separator) and _is_table_separator(separator):
+            rows = []
+            j = i + 2
+            while j < len(lines):
+                row = _split_table_row(lines[j])
+                if not row:
+                    break
+                rows.append(row)
+                j += 1
+            out.extend(_render_table(header, _table_alignments(separator), rows))
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
+
+def _ends_with_tableish_line(text):
+    if text.endswith("\n\n"):
+        return False
+    lines = text.split("\n")
+    idx = len(lines) - 1
+    while idx >= 0 and lines[idx] == "":
+        idx -= 1
+    if idx < 0:
+        return False
+    line = lines[idx].strip()
+    if not line.startswith("|"):
+        return False
+    return True
+
+
 def _md(text):
     """Converte markdown comum para ANSI. Funciona por chunk — spans que cruzam chunks ficam crus."""
     B = "\033[1m"  # bold — herda âmbar do CHAT_FG
     I = "\033[4m"          # sublinhado — mais confiável que italic no tmux
     R = RESET + CHAT_FG
     text = re.sub(r'```([^\n]*)\n(.*?)```', _render_code_block, text, flags=re.DOTALL)
+    text = _format_tables(text)
     text = re.sub(r'`([^`\n]+)`',                MD_CODE + r'\1' + R, text)
     text = re.sub(r'\*\*([^*\n]+)\*\*',          B       + r'\1' + R, text)
     text = re.sub(r'__([^_\n]+)__',              B       + r'\1' + R, text)

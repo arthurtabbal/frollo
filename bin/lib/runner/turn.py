@@ -23,7 +23,13 @@ from .. import errors
 
 from .assistant_text import AssistantTextRenderer
 from .panes import THINKING_LOG, _resize_thinking
-from .permissions import _handle_permission, _handle_permission_ask, _handle_control_request, _write_stdin
+from .permissions import (
+    _handle_permission,
+    _handle_permission_ask,
+    _handle_control_request,
+    _handle_user_question,
+    _write_stdin,
+)
 from .protocol import make_event
 from .stats import _fmt_tok
 
@@ -36,6 +42,31 @@ def _tool_result_text(content):
             if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
         )
     return str(content or "")
+
+
+def _looks_like_user_question_tool(tool_name, tool_input, err_text):
+    name = (tool_name or "").lower()
+    text = (err_text or "").lower()
+    if any(part in name for part in ("ask", "question", "input")) and "user" in name:
+        return True
+    if "question" in (tool_input or {}):
+        return True
+    unavailable = (
+        "not available in this environment",
+        "not supported in this environment",
+        "does not work in this environment",
+        "doesn't work in this environment",
+        "not available in non-interactive",
+        "not supported in non-interactive",
+    )
+    asks_user = (
+        "ask user",
+        "ask the user",
+        "askuser",
+        "user question",
+        "pergunta",
+    )
+    return any(marker in text for marker in unavailable) and any(marker in text for marker in asks_user)
 
 
 class Turn:
@@ -77,6 +108,7 @@ class Turn:
         self.spinner_shown = False
         self._suppress_perm_text = False
         self.perm_approved = False
+        self.retry_requested = False
         self.turn_done = False
         self.unknown_event_types = set()
         self.rate_limited = False
@@ -433,9 +465,22 @@ class Turn:
                         try:
                             if _handle_permission_ask(tool_name, self.client.cwd):
                                 self.perm_approved = True
+                                self.retry_requested = True
                                 self.client._retry_context = f"({tool_name} aprovado — prossiga)"
                         finally:
                             self.render.resume()
+                        self._suppress_perm_text = True
+                    elif _looks_like_user_question_tool(tool_name, tool_input, err_text):
+                        self.render.suspend()
+                        try:
+                            answer = _handle_user_question(tool_name, tool_input, err_text)
+                        finally:
+                            self.render.resume()
+                        self.retry_requested = True
+                        self.client._retry_context = (
+                            "Resposta do usuário à sua pergunta anterior:\n\n"
+                            f"{answer if answer else '(sem resposta textual)'}"
+                        )
                         self._suppress_perm_text = True
                 log_tool_result(block)
                 if tool_name == "Bash":

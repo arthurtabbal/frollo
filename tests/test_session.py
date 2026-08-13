@@ -27,6 +27,34 @@ class TestFirstUserText:
         ]}}
         assert _first_user_text(ev) == "implementa a feature"
 
+    def test_evento_meta_nao_vira_preview(self):
+        ev = {
+            "type": "user",
+            "isMeta": True,
+            "message": {"content": "texto interno do cli"},
+        }
+        assert _first_user_text(ev) == ""
+
+    def test_caveat_de_comando_local_nao_vira_preview(self):
+        ev = {
+            "type": "user",
+            "message": {
+                "content": "<local-command-caveat>Caveat: The messages below were generated</local-command-caveat>"
+            },
+        }
+        assert _first_user_text(ev) == ""
+
+    def test_comando_local_nao_vira_preview(self):
+        ev = {
+            "type": "user",
+            "message": {
+                "content": "<command-name>/clear</command-name>\n"
+                           "            <command-message>clear</command-message>\n"
+                           "            <command-args></command-args>"
+            },
+        }
+        assert _first_user_text(ev) == ""
+
     def test_evento_nao_reconhecido_retorna_vazio(self):
         assert _first_user_text({"type": "assistant"}) == ""
 
@@ -63,6 +91,37 @@ class TestLoadSessions:
         sessions = _load_sessions(tmp_path)
         assert len(sessions) == 1
         assert sessions[0][2] == "sobrevive"
+
+    def test_ignora_caveat_e_usa_primeira_mensagem_real(self, tmp_path):
+        _write_jsonl(tmp_path / "session-e.jsonl", [
+            {
+                "type": "user",
+                "isMeta": True,
+                "message": {
+                    "content": "<local-command-caveat>Caveat: The messages below were generated</local-command-caveat>"
+                },
+            },
+            {"type": "user", "message": {"content": "agora sim a conversa"}},
+        ])
+        sessions = _load_sessions(tmp_path)
+        assert len(sessions) == 1
+        assert sessions[0][2] == "agora sim a conversa"
+
+    def test_ignora_comando_local_e_usa_primeira_mensagem_real(self, tmp_path):
+        _write_jsonl(tmp_path / "session-f.jsonl", [
+            {
+                "type": "user",
+                "message": {
+                    "content": "<command-name>/clear</command-name>\n"
+                               "            <command-message>clear</command-message>\n"
+                               "            <command-args></command-args>"
+                },
+            },
+            {"type": "user", "message": {"content": "depois do clear"}},
+        ])
+        sessions = _load_sessions(tmp_path)
+        assert len(sessions) == 1
+        assert sessions[0][2] == "depois do clear"
 
 
 class TestPickSessionErrorLogging:

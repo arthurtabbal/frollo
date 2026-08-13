@@ -6,7 +6,7 @@ import termios
 import tty
 from pathlib import Path
 
-from ..theme import DIM, RESET, YELLOW, WHITE, BG_PERM
+from ..theme import DIM, RESET, YELLOW, WHITE, BG_PERM, BG_USER
 from ..gargulas import _gargula_comment
 from .text import _typewrite
 from .. import config
@@ -18,6 +18,19 @@ def _raw_stdin():
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+@contextlib.contextmanager
+def _cooked_stdin():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    cooked = list(old)
+    cooked[3] |= termios.ECHO | termios.ICANON
+    try:
+        termios.tcsetattr(fd, termios.TCSADRAIN, cooked)
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -66,6 +79,41 @@ def _write_stdin(proc, data):
         sys.stdout.write(f"{DIM}(stdin do turno já fechado — resposta de permissão não pôde ser enviada, tratando como negado){RESET}\n")
         sys.stdout.flush()
         return False
+
+
+def _question_from_input(inp, fallback=""):
+    if isinstance(inp, dict):
+        for key in ("question", "prompt", "message", "text"):
+            value = inp.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in inp.values():
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if fallback:
+        lines = [line.strip() for line in fallback.splitlines() if line.strip()]
+        if lines:
+            return lines[0]
+    return "O agente pediu uma resposta."
+
+
+def _handle_user_question(tool_name, inp=None, result_text=""):
+    """Fallback para ferramentas de pergunta que o CLI não suporta em --print.
+
+    O Frollo não executa a tool no lugar do Claude CLI; coleta a resposta humana
+    e devolve como contexto de retry no próximo turno.
+    """
+    question = _question_from_input(inp or {}, result_text)
+    sys.stdout.write(f"\n{BG_USER}{WHITE}  pergunta  {RESET}  {YELLOW}{tool_name or 'AskUser'}{RESET}\n")
+    sys.stdout.write(f"{question}\n")
+    sys.stdout.write(f"{DIM}> {RESET}")
+    sys.stdout.flush()
+    with _cooked_stdin():
+        answer = sys.stdin.readline()
+    answer = answer.rstrip("\n")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return answer
 
 
 def _handle_control_request(event, proc, cwd):
