@@ -47,7 +47,7 @@ class AssistantTextRenderer:
 
         rendered = self.md_buf.feed(text)
         if rendered:
-            self.render.push_stdout(CHAT_FG + rendered + RESET, delay=self._delay())
+            self._push_rendered(rendered)
 
     def finish(self, add_newline_if_mid_line=False):
         if self.text_started:
@@ -77,8 +77,12 @@ class AssistantTextRenderer:
     def _flush_markdown(self):
         remainder = self.md_buf.flush()
         if remainder:
-            self.render.push_stdout(CHAT_FG + remainder + RESET, delay=self._delay())
+            self._push_rendered(remainder)
         return remainder
+
+    def _push_rendered(self, text):
+        delay = 0 if self.md_buf.last_flush_had_table else self._delay()
+        self.render.push_stdout(CHAT_FG + text + RESET, delay=delay)
 
     def _delay(self):
         return 0.015 if self.cfg.get("typewriter", True) else 0

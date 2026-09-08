@@ -1,4 +1,6 @@
 import re
+import shutil
+from urllib.parse import quote
 
 E = "\033"
 DIM    = f"{E}[2m"
@@ -98,6 +100,7 @@ _GLOW = [
 
 
 _MD_BUFFER_CAP = 2000  # chars acumulados antes de forçar flush mesmo desbalanceado
+_URI_SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*:')
 
 
 class MdBuffer:
@@ -105,6 +108,7 @@ class MdBuffer:
 
     def __init__(self):
         self._buf = ""
+        self.last_flush_had_table = False
 
     def feed(self, chunk: str) -> str:
         """Recebe chunk; retorna texto processado quando spans balanceados, senão ''.
@@ -123,6 +127,7 @@ class MdBuffer:
         return self._flush()
 
     def _flush(self) -> str:
+        self.last_flush_had_table = _has_pipe_table(self._buf)
         out = _md(self._buf)
         self._buf = ""
         return out
@@ -196,6 +201,7 @@ def _table_alignments(cells):
 
 
 def _plain_markdown_width(text):
+    text = re.sub(r'\[([^\]\n]+)\]\(([^)\n]+)\)', lambda m: _link_text(m.group(1), m.group(2)), text)
     text = re.sub(r'`([^`\n]+)`', r'\1', text)
     text = re.sub(r'\*\*([^*\n]+)\*\*', r'\1', text)
     text = re.sub(r'__([^_\n]+)__', r'\1', text)
@@ -215,6 +221,143 @@ def _pad_cell(text, width, align):
     return text + (" " * pad)
 
 
+def _terminal_columns():
+    return shutil.get_terminal_size((100, 24)).columns
+
+
+def _table_total_width(widths):
+    if not widths:
+        return 0
+    return 2 + sum(widths) + (3 * (len(widths) - 1))
+
+
+def _fit_table_widths(widths, max_width):
+    if not widths or _table_total_width(widths) <= max_width:
+        return widths
+
+    cols = len(widths)
+    available = max_width - 2 - (3 * (cols - 1))
+    if available <= cols:
+        return [1] * cols
+
+    min_width = max(4, min(10, available // cols))
+    fitted = [min(width, min_width) for width in widths]
+    remaining = max(0, available - sum(fitted))
+
+    while remaining > 0:
+        candidates = [
+            idx for idx, width in enumerate(widths)
+            if fitted[idx] < width
+        ]
+        if not candidates:
+            break
+        candidates.sort(key=lambda idx: widths[idx] - fitted[idx], reverse=True)
+        for idx in candidates:
+            if remaining <= 0:
+                break
+            fitted[idx] += 1
+            remaining -= 1
+
+    return fitted
+
+
+def _markdown_words(text):
+    words = []
+    i = 0
+    while i < len(text):
+        if text[i].isspace():
+            i += 1
+            continue
+
+        if text[i] == "[":
+            label_end = text.find("](", i)
+            if label_end != -1:
+                target_end = text.find(")", label_end + 2)
+                if target_end != -1:
+                    words.append(text[i:target_end + 1])
+                    i = target_end + 1
+                    continue
+
+        if text[i] == "`":
+            end = text.find("`", i + 1)
+            if end != -1:
+                words.append(text[i:end + 1])
+                i = end + 1
+                continue
+
+        j = i + 1
+        while j < len(text) and not text[j].isspace():
+            j += 1
+        words.append(text[i:j])
+        i = j
+    return words
+
+
+def _split_long_word(word, width):
+    if _plain_markdown_width(word) <= width:
+        return [word]
+
+    parts = []
+    current = ""
+    for ch in word:
+        candidate = current + ch
+        if current and _plain_markdown_width(candidate) > width:
+            parts.append(current)
+            current = ch
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _wrap_cell(text, width):
+    if not text:
+        return [""]
+    if width <= 1:
+        return _split_long_word(text, max(1, width))
+
+    lines = []
+    current = ""
+    for word in _markdown_words(text):
+        if _plain_markdown_width(word) > width:
+            if current:
+                lines.append(current)
+                current = ""
+            lines.extend(_split_long_word(word, width))
+            continue
+
+        candidate = word if not current else current + " " + word
+        if _plain_markdown_width(candidate) <= width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _render_row(row, widths, alignments, bold=False):
+    wrapped = [_wrap_cell(row[col], widths[col]) for col in range(len(widths))]
+    height = max(len(cell) for cell in wrapped)
+    rendered = []
+
+    for line_idx in range(height):
+        cells = []
+        for col, cell_lines in enumerate(wrapped):
+            line = cell_lines[line_idx] if line_idx < len(cell_lines) else ""
+            padded = _pad_cell(line, widths[col], alignments[col])
+            if bold:
+                padded = BOLD + padded + RESET + CHAT_FG
+            cells.append(padded)
+        rendered.append("  " + " | ".join(cells))
+
+    return rendered
+
+
 def _render_table(header, alignments, rows):
     cols = len(header)
 
@@ -222,22 +365,17 @@ def _render_table(header, alignments, rows):
         return (row + [""] * cols)[:cols]
 
     table_rows = [normalize(header)] + [normalize(row) for row in rows]
-    widths = [
+    natural_widths = [
         max(_plain_markdown_width(row[col]) for row in table_rows)
         for col in range(cols)
     ]
+    widths = _fit_table_widths(natural_widths, _terminal_columns())
     sep = "  " + DIM + "-+-".join("-" * width for width in widths) + RESET + CHAT_FG
-    rendered = [
-        "  " + " | ".join(BOLD + _pad_cell(header[col], widths[col], alignments[col]) + RESET + CHAT_FG
-                           for col in range(cols)),
-        sep,
-    ]
+    rendered = _render_row(normalize(header), widths, alignments, bold=True)
+    rendered.append(sep)
     for row in rows:
         row = normalize(row)
-        rendered.append("  " + " | ".join(
-            _pad_cell(row[col], widths[col], alignments[col])
-            for col in range(cols)
-        ))
+        rendered.extend(_render_row(row, widths, alignments))
     return rendered
 
 
@@ -265,6 +403,17 @@ def _format_tables(text):
     return "\n".join(out)
 
 
+def _has_pipe_table(text):
+    text = re.sub(r'```[^\n]*\n.*?```', '', text, flags=re.DOTALL)
+    lines = text.split("\n")
+    for i in range(len(lines) - 1):
+        header = _split_table_row(lines[i])
+        separator = _split_table_row(lines[i + 1])
+        if header and separator and len(header) == len(separator) and _is_table_separator(separator):
+            return True
+    return False
+
+
 def _ends_with_tableish_line(text):
     if text.endswith("\n\n"):
         return False
@@ -280,6 +429,65 @@ def _ends_with_tableish_line(text):
     return True
 
 
+def _short_link_target(target):
+    target = target.strip()
+    if not target:
+        return ""
+
+    line = ""
+    match = re.match(r'^(.*):(\d+)$', target)
+    if match:
+        target = match.group(1)
+        line = ":" + match.group(2)
+
+    if target.startswith("/"):
+        name = target.rstrip("/").rsplit("/", 1)[-1]
+        return (name or target) + line
+    return target + line
+
+
+def _link_uri(target):
+    target = target.strip()
+    if not target:
+        return ""
+    if _URI_SCHEME_RE.match(target):
+        return target
+
+    line = ""
+    match = re.match(r'^(.*):(\d+)$', target)
+    if match:
+        target = match.group(1)
+        line = "#L" + match.group(2)
+
+    if target.startswith("/"):
+        return "file://" + quote(target) + line
+    return target
+
+
+def _link_text(label, target):
+    target = target.strip()
+    if _URI_SCHEME_RE.match(target):
+        return label
+
+    short = _short_link_target(target)
+    if not short or short == label:
+        return label
+    if short.startswith(label + ":"):
+        return short
+    return f"{label} <{short}>"
+
+
+def _terminal_link(text, uri):
+    uri = re.sub(r'[\x00-\x1f\x7f]', '', uri)
+    if not uri:
+        return text
+    return f"{E}]8;;{uri}{E}\\{text}{E}]8;;{E}\\"
+
+
+def _render_link(m):
+    return BOLD + _terminal_link(_link_text(m.group(1), m.group(2)), _link_uri(m.group(2))) + RESET + CHAT_FG
+
+
 def _md(text):
     """Converte markdown comum para ANSI. Funciona por chunk — spans que cruzam chunks ficam crus."""
     B = "\033[1m"  # bold — herda âmbar do CHAT_FG
@@ -287,6 +495,7 @@ def _md(text):
     R = RESET + CHAT_FG
     text = re.sub(r'```([^\n]*)\n(.*?)```', _render_code_block, text, flags=re.DOTALL)
     text = _format_tables(text)
+    text = re.sub(r'\[([^\]\n]+)\]\(([^)\n]+)\)', _render_link, text)
     text = re.sub(r'`([^`\n]+)`',                MD_CODE + r'\1' + R, text)
     text = re.sub(r'\*\*([^*\n]+)\*\*',          B       + r'\1' + R, text)
     text = re.sub(r'__([^_\n]+)__',              B       + r'\1' + R, text)
