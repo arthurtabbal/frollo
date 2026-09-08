@@ -2,6 +2,9 @@
 # Unit tests for install.sh — version comparison and parsing logic
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_DIR/conf/min_versions.sh"
+
 _pass=0; _fail=0
 
 _assert() {
@@ -16,9 +19,9 @@ _assert() {
 _ver_ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
 
 echo "── _ver_ge ──────────────────────────────────────────"
-_assert "3.4 >= 2.6"    "$( _ver_ge 3.4  2.6  && echo 0 || echo 1 )"
-_assert "2.6 >= 2.6"    "$( _ver_ge 2.6  2.6  && echo 0 || echo 1 )"
-_assert "2.5 < 2.6"     "$( _ver_ge 2.5  2.6  && echo 1 || echo 0 )"
+_assert "3.4 >= tmux mínimo" "$( _ver_ge 3.4  "$FROLLO_MIN_TMUX_VERSION" && echo 0 || echo 1 )"
+_assert "3.1 >= tmux mínimo" "$( _ver_ge 3.1  "$FROLLO_MIN_TMUX_VERSION" && echo 0 || echo 1 )"
+_assert "3.0 < tmux mínimo"  "$( _ver_ge 3.0  "$FROLLO_MIN_TMUX_VERSION" && echo 1 || echo 0 )"
 _assert "3.10 >= 3.9"   "$( _ver_ge 3.10 3.9  && echo 0 || echo 1 )"
 _assert "3.9 < 3.10"    "$( _ver_ge 3.9  3.10 && echo 1 || echo 0 )"
 _assert "1.7 >= 1.6"    "$( _ver_ge 1.7  1.6  && echo 0 || echo 1 )"
@@ -30,7 +33,7 @@ echo "── tmux version parser ───────────────�
 _parse_tmux() { echo "$1" | awk '{print $2}' | tr -d 'a-z'; }
 _assert '"tmux 3.4a" → "3.4"' "$( [ "$( _parse_tmux 'tmux 3.4a' )" = '3.4' ] && echo 0 || echo 1 )"
 _assert '"tmux 3.0a" → "3.0"' "$( [ "$( _parse_tmux 'tmux 3.0a' )" = '3.0' ] && echo 0 || echo 1 )"
-_assert '"tmux 2.6"  → "2.6"' "$( [ "$( _parse_tmux 'tmux 2.6'  )" = '2.6' ] && echo 0 || echo 1 )"
+_assert '"tmux 3.1"  → "3.1"' "$( [ "$( _parse_tmux 'tmux 3.1'  )" = '3.1' ] && echo 0 || echo 1 )"
 _assert '"tmux 3.2a" → "3.2"' "$( [ "$( _parse_tmux 'tmux 3.2a' )" = '3.2' ] && echo 0 || echo 1 )"
 
 echo ""

@@ -7,6 +7,9 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK_SCRIPT="$HOME/.claude/hooks/log.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
+# Fonte única para versões mínimas consumidas pelo install e pelos testes.
+source "$REPO_DIR/conf/min_versions.sh"
+
 # ── apt dependencies (jq, tmux, python3) ─────────────────────────────────────
 apt_missing=()
 command -v jq      >/dev/null 2>&1 || apt_missing+=("jq")
@@ -60,11 +63,11 @@ if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 
     exit 1
 fi
 
-# tmux >= 2.6  (select-pane -T and pane-border-status)
+# tmux >= $FROLLO_MIN_TMUX_VERSION  (split-window -l <percent>, select-pane -T)
 _tmuxver=$(tmux -V | awk '{print $2}' | tr -d 'a-z')
-if ! _ver_ge "$_tmuxver" "2.6"; then
-    echo "✗ tmux 2.6+ required (found $_tmuxver)"
-    echo "  Ubuntu 20.04+ ships 3.0a or newer."
+if ! _ver_ge "$_tmuxver" "$FROLLO_MIN_TMUX_VERSION"; then
+    echo "✗ tmux $FROLLO_MIN_TMUX_VERSION+ required (found $_tmuxver)"
+    echo "  Frollo uses percentage pane sizing, available in tmux 3.1+."
     exit 1
 fi
 

@@ -339,9 +339,9 @@ class Turn:
     def _handle_content_block_delta(self, delta):
         dtype = delta.get("type")
 
-        # Texto do thinking: Sonnet manda thinking_delta; outros modelos podem
-        # mandar como text_delta dentro do bloco thinking. Opus 4.8 redige o
-        # thinking (só signature_delta) — chunk_t fica vazio e nada é exibido.
+        # Texto do thinking: modelos Claude atuais mandam thinking_delta; alguns
+        # caminhos ainda podem mandar text_delta dentro do bloco thinking. Blocos
+        # só com signature_delta ficam sem texto visível e são tratados no result.
         if dtype == "thinking_delta" or (dtype == "text_delta" and self.current_block == "thinking"):
             chunk_t = delta.get("thinking") or delta.get("text") or ""
 

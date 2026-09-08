@@ -172,11 +172,12 @@ def _run_stream(fake_client, lines, config_override=None):
     return log_calls, anim_calls, resize_calls
 
 
-# Streams reais capturados de `claude --output-format stream-json` (maio 2026):
-# Sonnet expõe o thinking via thinking_delta; Opus 4.8 o redige (só signature_delta).
+# Streams sintéticos baseados no stream-json do Claude: um turno com thinking
+# visível e outro com bloco de thinking sem texto (só signature_delta), caminho
+# que ainda pode acontecer em requests/subrequests específicos.
 
-_OPUS_REDIGIDO = [
-    _se({"type": "message_start", "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 1}}}),
+_SEM_THINKING_VISIVEL = [
+    _se({"type": "message_start", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
     _se({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
     _se({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc"}}),
     _se({"type": "content_block_stop", "index": 0}),
@@ -218,11 +219,11 @@ _VISIVEL_DEPOIS_VAZIO = [
 ]
 
 
-class TestThinkingRedigido:
-    """Opus 4.8 omite o thinking — não cresce o pane, mas avisa que foi omitido."""
+class TestThinkingSemTexto:
+    """Bloco de thinking sem texto não cresce o pane, mas avisa no fim."""
 
     def test_thinking_vazio_nao_escreve_header(self, fake_client, capsys):
-        log_calls, anim_calls, resize_calls = _run_stream(fake_client, _OPUS_REDIGIDO)
+        log_calls, anim_calls, resize_calls = _run_stream(fake_client, _SEM_THINKING_VISIVEL)
         # nenhum texto de thinking foi animado, nenhum header (cor de thinking) escrito
         assert anim_calls == []
         assert not any(THINKING_FG in t for t in log_calls)
@@ -230,11 +231,11 @@ class TestThinkingRedigido:
         assert resize_calls == []
 
     def test_escreve_nota_de_omitido(self, fake_client, capsys):
-        log_calls, _, _ = _run_stream(fake_client, _OPUS_REDIGIDO)
+        log_calls, _, _ = _run_stream(fake_client, _SEM_THINKING_VISIVEL)
         assert any("omitiu o thinking" in t for t in log_calls)
 
     def test_resposta_ainda_aparece(self, fake_client, capsys):
-        _run_stream(fake_client, _OPUS_REDIGIDO)
+        _run_stream(fake_client, _SEM_THINKING_VISIVEL)
         assert "51 = 3*17" in capsys.readouterr().out
 
 

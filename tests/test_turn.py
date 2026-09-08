@@ -150,7 +150,7 @@ class TestThinkingDelta:
         assert turn.thinking_lines == 20
 
     def test_thinking_vazio_nao_escreve_header(self, fake_client):
-        """Opus 4.8 redige o thinking (só signature_delta) — sem texto, sem header."""
+        """Bloco de thinking só com signature_delta fica sem texto e sem header."""
         turn = _turn(fake_client)
         turn.handle_event(_se({"type": "content_block_start", "content_block": {"type": "thinking"}}))
         with patch("lib.runner.turn._log") as mock_log, \

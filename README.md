@@ -41,7 +41,7 @@ Think of it as somewhere between:
 
 ## Features
 
-* **Thinking, live** — the model's reasoning streams into its own pane as it happens.
+* **Thinking pane** — Claude models stream visible thinking there; the Codex backend currently shows summarized topic titles.
 * **Tool monitoring** — every tool call rendered in real time, in its own pane, with occasional commentary from three gargoyles.
 * **Execution statistics** — tokens, cost, context window and subscription quota, per turn and per session.
 * **Passive observer** — a system-wide hook captures every Claude Code session on the machine into an append-only JSONL event log; `observe.sh` tails and renders the stream.
@@ -53,7 +53,7 @@ Think of it as somewhere between:
 
 ## In Action
 
-The interface is split into live panes: chat output, thinking/reasoning, tool execution, session statistics and the editor itself.
+The interface is split into live panes: chat output, Claude thinking or Codex topic summaries, tool execution, session statistics and the editor itself.
 
 ![Frollo stats and tool panes showing command execution, context usage and quota](docs/assets/readme/frollo-stats-tools.png)
 
@@ -177,7 +177,8 @@ chat.py
   → Claude adapter or Codex adapter
     → Frollo events    →  existing panes
     → text deltas      →  chat pane (typewriter)
-    → reasoning        →  thinking pane
+    → Claude thinking / Codex topic summaries
+                       →  thinking pane
     → tool events      →  tools pane + gargoyles
     → usage / quota    →  stats pane
 ```

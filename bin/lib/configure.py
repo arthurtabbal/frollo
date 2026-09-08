@@ -75,8 +75,8 @@ def run_configure(*, first_run: bool = False) -> None:
     )
     thinking_autoresize = _ask(
         "AUTO-RESIZE DO THINKING",
-        "Pane de thinking cresce durante o raciocínio e encolhe depois. Desligue "
-        "para manter um pane pequeno fixo no topo (útil com Opus, que omite o thinking).",
+        "Pane de thinking cresce durante o raciocínio e encolhe depois. No Claude, "
+        "todos os modelos mostram thinking; no Codex, aparecem só tópicos resumidos.",
         existing.get("thinking_autoresize", True),
     )
 
