@@ -33,6 +33,8 @@ from .permissions import (
 from .protocol import make_event
 from .stats import _fmt_tok
 
+_STDOUT_JSON_BUFFER_CAP = 64 * 1024
+
 
 def _tool_result_text(content):
     if isinstance(content, list):
@@ -67,6 +69,65 @@ def _looks_like_user_question_tool(tool_name, tool_input, err_text):
         "pergunta",
     )
     return any(marker in text for marker in unavailable) and any(marker in text for marker in asks_user)
+
+
+def _escape_control_chars_in_json_strings(text):
+    """Best-effort repair for CLI JSON split by literal newlines inside strings."""
+    out = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            continue
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            out.append(ch)
+            escaped = True
+        elif ch == '"':
+            out.append(ch)
+            in_string = False
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _loads_stdout_json(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as original:
+        if any(ch in text for ch in "\n\r\t"):
+            try:
+                return json.loads(_escape_control_chars_in_json_strings(text))
+            except json.JSONDecodeError:
+                pass
+        raise original
+
+
+def _json_error_may_be_incomplete(exc, text):
+    stripped = text.lstrip()
+    if not stripped.startswith(("{", "[")):
+        return False
+    if len(text) > _STDOUT_JSON_BUFFER_CAP:
+        return False
+    msg = exc.msg.lower()
+    return (
+        exc.pos >= len(text) - 1
+        or "unterminated string" in msg
+        or "expecting value" in msg
+        or "expecting ',' delimiter" in msg
+        or "expecting property name" in msg
+    )
 
 
 class Turn:
@@ -124,6 +185,7 @@ class Turn:
         self.result_cost = None
         self.result_in_tok = None
         self.result_out_tok = None
+        self._stdout_json_buf = ""
         self._emit("turn.started", {"status": "in_progress"})
 
     # -- Frollo v0 events -------------------------------------------------
@@ -199,12 +261,19 @@ class Turn:
     # -- dispatch -----------------------------------------------------------
 
     def handle_line(self, raw):
-        raw = raw.strip()
-        if not raw:
+        line = raw.rstrip("\r\n")
+        if self._stdout_json_buf:
+            text = self._stdout_json_buf + "\n" + line
+        else:
+            text = line.strip()
+        if not text:
             return
         try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
+            event = _loads_stdout_json(text)
+        except json.JSONDecodeError as exc:
+            if _json_error_may_be_incomplete(exc, text):
+                self._stdout_json_buf = text
+                return
             # stderr é um canal separado (_stderr_reader em run_turn) — uma linha
             # não-JSON no stdout é anomalia, não caminho esperado. Vai pro pane de
             # tools e pro errors.jsonl; fora do chat pra não picotar o texto do
@@ -213,11 +282,29 @@ class Turn:
             # falha de forma, canal diferente.
             errors.report(
                 "claude/stdout", "linha não-JSON no stdout do claude",
-                severity="warning", code="non_json_line", detail=raw[:400],
+                severity="warning", code="non_json_line", detail=text[:400],
                 tmux_srv=getattr(self.client, "tmux_srv", None), chat=False,
             )
             return
+        self._stdout_json_buf = ""
         self.handle_event(event)
+
+    def flush_pending_json(self):
+        if not self._stdout_json_buf:
+            return False
+        pending = self._stdout_json_buf
+        self._stdout_json_buf = ""
+        try:
+            event = _loads_stdout_json(pending)
+        except json.JSONDecodeError:
+            errors.report(
+                "claude/stdout", "JSON incompleto no stdout do claude",
+                severity="warning", code="non_json_line", detail=pending[:400],
+                tmux_srv=getattr(self.client, "tmux_srv", None), chat=False,
+            )
+            return True
+        self.handle_event(event)
+        return False
 
     def handle_event(self, event):
         etype = event.get("type")

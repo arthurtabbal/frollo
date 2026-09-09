@@ -175,7 +175,7 @@ Caminhos que estavam mudos e hoje reportam:
 | Request do servidor sem handler | Codex | ninguém respondia — **o Codex bloqueava esperando**, "pensando" infinito de verdade | `respond_error` com `-32601` + erro na tela |
 | Método/item não mapeado | Codex | `[]` | `notice` de warning, uma vez por método (`errors.seen_first_time`) |
 | Tipo de evento não mapeado | Claude | ia só pro `events.log` | `warning` uma vez por tipo (`errors.report_once`) |
-| Processo morto no meio do turno | ambos | loop rodava até o teto sem mensagem | `fatal` com exit code e tail do stderr (`errors.process_diagnostics`) |
+| Processo morto no meio do turno | ambos | loop rodava até o teto sem mensagem | `fatal` com exit code e tail do stderr (`errors.process_diagnostics`); no Claude, exit code 0 sem `result` vira `missing_result`, porque é falha de protocolo, não morte real do processo |
 | Handshake (`initialize`/`thread/start`) falho | Codex | `TypeError` genérico ou timeout mudo | `_codex_await` aborta o turno explicando o motivo |
 | `result` com `is_error`/`subtype` | Claude | turno acabava sem texto e sem explicação | erro com a mensagem do CLI |
 | Teto de turno de 120s | ambos | corte de duração — matava turno longo saudável | `errors.idle_timed_out`: 120s **sem nenhum evento**, com falha explícita |

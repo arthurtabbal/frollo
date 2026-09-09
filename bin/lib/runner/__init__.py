@@ -305,6 +305,10 @@ def run_turn(client, message, images=None):
             if _eof or turn.turn_done:
                 break
 
+        pending_json = False
+        if _eof and turn is not None:
+            pending_json = turn.flush_pending_json()
+
         # Deixa a animação pendente (ex.: cauda do último bloco de texto) terminar
         # em ritmo normal e para a thread — só depois disso é seguro o main thread
         # voltar a escrever no stdout sozinho (checks abaixo).
@@ -319,13 +323,26 @@ def run_turn(client, message, images=None):
             )
         elif _eof and not turn.turn_done:
             # stdout fechou sem o evento 'result': o processo morreu no meio do
-            # turno. Sem isso o turno só voltava ao prompt, mudo.
-            errors.report(
-                "claude", "o processo `claude` terminou no meio do turno",
-                severity="fatal", code="process_died",
-                detail=errors.process_diagnostics(proc.poll(), RUNDIR / "stderr.log"),
-                tmux_srv=client.tmux_srv,
-            )
+            # turno ou o CLI encerrou sem delimitador de protocolo. Diferencia
+            # exit code 0 para não dizer "processo morreu" quando o sintoma real
+            # é ausência de `result` (ex.: stdout terminou com JSON parcial).
+            exit_code = proc.poll()
+            if exit_code == 0:
+                detail = errors.process_diagnostics(exit_code, RUNDIR / "stderr.log")
+                if pending_json:
+                    detail += "\nstdout terminou com JSON parcial"
+                errors.report(
+                    "claude/protocolo", "stdout fechou sem evento `result` do claude",
+                    severity="fatal", code="missing_result", detail=detail,
+                    tmux_srv=client.tmux_srv,
+                )
+            else:
+                errors.report(
+                    "claude", "o processo `claude` terminou no meio do turno",
+                    severity="fatal", code="process_died",
+                    detail=errors.process_diagnostics(exit_code, RUNDIR / "stderr.log"),
+                    tmux_srv=client.tmux_srv,
+                )
 
         if turn.text_started and turn.spinner_shown:
             sys.stdout.write("\n")

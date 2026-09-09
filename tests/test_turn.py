@@ -194,6 +194,39 @@ class TestThinkingDelta:
         assert any("thinking_tokens=0" in call.args[1] for call in mock_log.call_args_list)
 
 
+class TestStdoutJsonFragments:
+    def test_input_json_delta_com_newline_literal_e_recomposto(self, fake_client):
+        turn = _turn(fake_client)
+        raw = (
+            '{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
+            '"delta":{"type":"input_json_delta","partial_json":"\\\\\\", \\\\\\"description\\\\\\"'
+            '\n'
+            ': \\\\\\"linha 1\\\\nlinha 2\\\\\\""}}}'
+        )
+
+        with patch("lib.runner.turn.errors.report") as report:
+            for line in raw.splitlines(keepends=True):
+                turn.handle_line(line)
+
+        report.assert_not_called()
+        assert turn._stdout_json_buf == ""
+
+    def test_flush_pending_json_reporta_fragmento_incompleto(self, fake_client):
+        turn = _turn(fake_client)
+
+        with patch("lib.runner.turn.errors.report") as report:
+            turn.handle_line(
+                '{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
+                '"delta":{"type":"input_json_delta","partial_json":"abc'
+            )
+            report.assert_not_called()
+
+            assert turn.flush_pending_json() is True
+
+        assert report.call_args.kwargs["code"] == "non_json_line"
+        assert "JSON incompleto" in report.call_args.args[1]
+
+
 class TestTextDelta:
     def test_acumula_last_response_text(self, fake_client):
         turn = _turn(fake_client)

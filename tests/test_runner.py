@@ -80,6 +80,39 @@ class TestClaudeNaoEncontrado:
         assert "PATH:" in detail
         assert "which claude:" in detail
 
+    def test_eof_exit_zero_sem_result_e_falha_de_protocolo(self, fake_client):
+        proc = MagicMock()
+        proc.stdout = _FakeStdout([])
+        proc.stderr = _FakeStdout([])
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+
+        fake_client._total_input_tokens = 0
+        fake_client._total_output_tokens = 0
+        fake_client._total_elapsed = 0.0
+        fake_client._total_cost = 0.0
+        fake_client._streaming_text = False
+
+        rundir = Path(tempfile.mkdtemp())
+        devnull = open(os.devnull, "r")
+        try:
+            with patch("lib.runner.subprocess.Popen", return_value=proc), \
+                 patch("lib.runner.RUNDIR", rundir), \
+                 patch("lib.runner.turn.RUNDIR", rundir), \
+                 patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
+                 patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+                 patch("lib.runner.termios.tcsetattr"), \
+                 patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+                 patch("lib.runner.RenderQueue", side_effect=lambda: _FakeRenderQueue([])), \
+                 patch("lib.runner.errors.report") as report, \
+                 patch.object(sys, "stdin", devnull):
+                run_turn(fake_client, "oi")
+        finally:
+            devnull.close()
+
+        assert report.call_args.args[0] == "claude/protocolo"
+        assert report.call_args.kwargs["code"] == "missing_result"
+
 
 class _FakeStdout:
     """stdout de subprocesso falso: serve linhas pré-definidas, depois EOF."""
