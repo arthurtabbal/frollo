@@ -67,6 +67,8 @@ def test_event_kinds_cobrem_familias_do_protocolo_atual():
         "message.assistant.delta",
         "reasoning.delta",
         "command.started",
+        "context.compaction.started",
+        "context.compaction.finished",
         "file.change.finished",
         "approval.requested",
         "usage.updated",

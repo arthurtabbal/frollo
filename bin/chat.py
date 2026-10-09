@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib.theme import (
-    DIM, RESET, YELLOW, WHITE, PURPLE,
+    DIM, RESET, YELLOW, WHITE, PURPLE, BG_USER,
     CHAT_FG, TOOLS_BASH,
     HEADER_TITLE, HEADER_STONE, HEADER_DARK, HEADER_ROSE,
     _QUOTES,
@@ -86,11 +86,13 @@ def _normalize_model_choice(name, version=None):
         return f"claude-{match.group(1)}-{match.group(2).replace('.', '-')}"
     return model
 
-from lib.session import pick_session
+from lib.session import load_session_messages, pick_session
 from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
 from lib.runner.capabilities import backend_names, backend_profile, supports
-from lib.runner.codex import run_codex_turn
+from lib.runner.codex import (
+    load_codex_conversation, pick_codex_session, run_codex_compact, run_codex_turn,
+)
 from lib import config as _config
 from lib import errors
 from lib.configure import run_configure
@@ -115,6 +117,52 @@ def _usage_refresh_seconds():
 
 
 USAGE_REFRESH_SECONDS = _usage_refresh_seconds()
+
+_HISTORY_OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
+_HISTORY_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_HISTORY_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _safe_history_text(text):
+    """Mantém texto e quebras, removendo controles capazes de afetar o terminal."""
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _HISTORY_OSC_RE.sub("", text)
+    text = _HISTORY_CSI_RE.sub("", text)
+    return _HISTORY_CONTROL_RE.sub("", text).strip()
+
+
+def _history_user_block(text, cols=None):
+    """Renderiza input retomado como o bloco submetido no chat, sem rótulo."""
+    if cols is None:
+        try:
+            cols = os.get_terminal_size().columns
+        except OSError:
+            cols = 80
+    rendered = []
+    for line in text.split("\n"):
+        content = f"  {line}"
+        rem = len(content) % cols
+        rendered.append(f"{BG_USER}{WHITE}{content}{' ' * ((cols - rem) if rem else 0)}{RESET}\r\n")
+    return "".join(rendered)
+
+
+def _argv_without_resume(argv):
+    """Remove -r/--resume e seu ID opcional, preservando as demais flags."""
+    out = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg.startswith("--resume="):
+            index += 1
+            continue
+        if arg in ("--resume", "-r"):
+            index += 1
+            if index < len(argv) and not argv[index].startswith("-"):
+                index += 1
+            continue
+        out.append(arg)
+        index += 1
+    return out
 
 
 class Mode(Enum):
@@ -231,7 +279,7 @@ class ClaudeClient:
             pass
 
     def _write_quota_line(self, usage=None):
-        from lib.runner.stats import _render_quota_line
+        from lib.runner.stats import _render_quota_line, _without_autowrap
 
         stats_tty = self._stats_tty()
         if not stats_tty:
@@ -240,7 +288,8 @@ class ClaudeClient:
             usage = getattr(self, "_last_usage", None)
         try:
             fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-            os.write(fd, ("\033[4;1H" + _render_quota_line(usage)).encode())
+            content = "\033[4;1H" + _render_quota_line(usage)
+            os.write(fd, _without_autowrap(content).encode())
             os.close(fd)
         except OSError:
             pass
@@ -605,22 +654,24 @@ class ClaudeClient:
         from lib.runner.stats import (
             _model_ctx_window, _render_quota_line, _render_ctx_line,
             _render_turn_line, _render_total_line, _render_no_data_lines,
+            _without_autowrap,
         )
 
         stats_tty = self._stats_tty()
         if not stats_tty:
             return
 
+        is_codex = self._backend_profile()["label"] == "codex"
         cfg_dir = _config.CONFIG_PATH.parent
 
         # ── carregar dados salvos ──────────────────────────────────────────
         sess = {}
         sess_file = cfg_dir / "last_session.json"
-        if sess_file.exists():
+        if not is_codex and sess_file.exists():
             try: sess = json.loads(sess_file.read_text())
             except Exception: pass
 
-        quota = self._load_cached_usage()
+        quota = None if is_codex else self._load_cached_usage()
 
         # ── renderizar as 4 linhas ─────────────────────────────────────────
         if sess:
@@ -642,12 +693,15 @@ class ClaudeClient:
         try:
             content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
             fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-            os.write(fd, content.encode())
+            os.write(fd, _without_autowrap(content).encode())
             os.close(fd)
         except OSError:
             pass
 
-        self._ensure_usage_updater()
+        if is_codex:
+            self._start_codex_usage_pane()
+        else:
+            self._ensure_usage_updater()
 
     def _run_turn(self, message, images=None):
         user_message = message
@@ -661,9 +715,78 @@ class ClaudeClient:
         except KeyboardInterrupt:
             raise
         else:
+            if (self._backend_profile()["label"] != "codex"
+                    and not getattr(self, "_last_turn_completed", True)):
+                preserved = self._preserve_interrupted_turn(reason="falha_do_backend")
+                self._finish_interrupted_turn_capture()
+                if preserved:
+                    sys.stdout.write(
+                        f"{DIM}contexto parcial preservado para o próximo turno{RESET}\n"
+                    )
+                    sys.stdout.flush()
+                return result
             self._finish_interrupted_turn_capture()
             self._clear_interrupted_context()
             return result
+
+    def _compact(self, instructions=""):
+        if not self._supports("manual_compaction"):
+            sys.stdout.write(
+                f"\n{YELLOW}backend {self._backend_profile()['label']} não suporta /compact{RESET}\n"
+            )
+            sys.stdout.flush()
+            return False
+
+        instructions = (instructions or "").strip()
+        if self._backend_profile()["label"] == "codex":
+            if instructions:
+                sys.stdout.write(
+                    f"\n{YELLOW}o Codex App Server não aceita instruções em /compact; "
+                    f"use apenas /compact{RESET}\n"
+                )
+                sys.stdout.flush()
+                return False
+            return run_codex_compact(self)
+
+        command = "/compact"
+        if instructions:
+            command += f" {instructions}"
+        # Comando local do CLI: não anexa nem consome `interrupted_context.md`.
+        # Esse contexto pertence ao próximo turno real; embrulhar `/compact`
+        # naquele texto faria o Claude tratá-lo como prompt comum.
+        return run_turn(self, command)
+
+    def _print_resumed_history(self):
+        """Reidrata o chat visualmente sem reenviar mensagens ao backend."""
+        try:
+            if self._backend_profile()["label"] == "codex":
+                messages = load_codex_conversation(self.cwd, self.resume_id)
+            else:
+                messages = load_session_messages(self.cwd, self.resume_id or None)
+        except Exception as exc:
+            errors.report_exception(
+                "session/history", exc, severity="warning", code="history_load_failed",
+                tmux_srv=self.tmux_srv,
+            )
+            return
+
+        visible = [(role, _safe_history_text(text)) for role, text in messages]
+        visible = [(role, text) for role, text in visible if text]
+        if not visible:
+            errors.report(
+                "session/history", "sessão retomada sem histórico visual disponível",
+                severity="warning", code="history_empty", tmux_srv=self.tmux_srv,
+            )
+            return
+
+        sys.stdout.write(f"{DIM}── conversa anterior ──{RESET}\n\n")
+        for role, text in visible:
+            if role == "user":
+                sys.stdout.write(_history_user_block(text) + "\n")
+            else:
+                sys.stdout.write(f"{CHAT_FG}{text}{RESET}\n\n")
+        sys.stdout.write(f"{DIM}── fim da conversa anterior ──{RESET}\n\n")
+        sys.stdout.flush()
 
     def chat(self):
         self._print_header()
@@ -674,6 +797,7 @@ class ClaudeClient:
             else:
                 sys.stdout.write(f"{CHAT_FG}retomando conversa anterior{RESET}\n\n")
             sys.stdout.flush()
+            self._print_resumed_history()
             self._startup_stats()
         else:
             self._start_usage_pane()
@@ -705,6 +829,10 @@ class ClaudeClient:
                         sys.stdout.write('\n')
                         sys.stdout.flush()
                         self._run_turn(content)
+                    continue
+                if user_input.strip() == "/compact" or user_input.strip().startswith("/compact "):
+                    instructions = user_input.strip()[len("/compact"):].strip()
+                    self._compact(instructions)
                     continue
                 if user_input.strip().startswith("/model"):
                     if not self._supports("model_selection"):
@@ -793,10 +921,7 @@ class ClaudeClient:
                     # em modo persistente self.proc pode seguir vivo (é o propósito da
                     # Fase 4); sem isso viraria órfão escrevendo num stdin sem leitor.
                     _terminate_proc(self.proc)
-                    argv = sys.argv[:]
-                    if "--resume" in argv:
-                        i = argv.index("--resume")
-                        argv = argv[:i] + argv[i+2:]
+                    argv = _argv_without_resume(sys.argv)
                     os.execvp(argv[0], argv)
                 if user_input.strip() == "/refresh":
                     if not self._supports("session_resume"):
@@ -812,7 +937,11 @@ class ClaudeClient:
                     sys.stdout.write(f"{DIM}reiniciando…{RESET}\n")
                     sys.stdout.flush()
                     _terminate_proc(self.proc)
-                    os.execvp(sys.argv[0], [sys.argv[0], "--resume", self.session_id])
+                    argv = [sys.argv[0], "--backend", self._backend_profile()["label"],
+                            "--resume", self.session_id]
+                    if self.effort:
+                        argv += ["--effort", self.effort]
+                    os.execvp(sys.argv[0], argv)
                 sys.stdout.write('\n')
                 sys.stdout.flush()
                 images = [pending_image] if pending_image else None
@@ -898,9 +1027,6 @@ if __name__ == "__main__":
         if not supports(profile, "agent_selection"):
             if args.agent or args.agent_alias:
                 p.error(f"--backend {args.backend} ainda não suporta seleção de agent")
-        if not supports(profile, "session_resume"):
-            if args.resume is not None:
-                p.error(f"--backend {args.backend} ainda não suporta --resume")
         if not supports(profile, "model_selection"):
             model = None
         else:
@@ -913,7 +1039,8 @@ if __name__ == "__main__":
             if args.resume:
                 resume_id = args.resume
             else:
-                resume_id = pick_session(os.getcwd()) or ""
+                picker = pick_codex_session if args.backend == "codex" else pick_session
+                resume_id = picker(os.getcwd()) or ""
 
         _first_run = _config.is_first_run()
         if args.configure or _first_run:

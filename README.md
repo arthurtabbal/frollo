@@ -48,7 +48,7 @@ Think of it as somewhere between:
 * **Typewriter pacing** — output is paced so you can follow the agent in real time instead of staring at a spinner and then receiving a wall of text. Any keypress skips ahead.
 * **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
 * **Loud failures** — errors never die quietly: they land in the chat, expand the tools pane with the details, and append to `~/.config/frollo/errors.jsonl`.
-* **Session picker** — resume any previous session interactively.
+* **Session picker and visual resume** — resume any previous session interactively and rehydrate its user/assistant conversation in the chat before the next prompt.
 * **Experimental Codex backend** — run the same terminal interface against `codex app-server` with `--backend codex`.
 
 ## In Action
@@ -94,6 +94,7 @@ frollo /path/to/project       # full layout in a specific project
 frollo --model sonnet --model-version 4.6 --effort high
 frollo --advisor              # Claude Code agent shortcut
 frollo --backend codex        # experimental Codex App Server backend
+frollo --resume --backend codex # pick and resume a Codex thread for this project
 ./bin/observe.sh              # passive observer only: the raw event stream,
                               # from every Claude Code session on the machine
 ```
@@ -116,6 +117,7 @@ The full layout opens a tmux session:
 |---|---|
 | `/snapshot` | Capture current visual state and send it to the agent |
 | `/paste` | Open `$EDITOR` for long text; sends on close |
+| `/compact [instructions]` | Compact the current context (instructions are supported by Claude; Codex accepts `/compact` without arguments) |
 | `/refresh` | Restart, resuming the current session |
 | `/new` | Restart with a fresh context |
 | `/model [name] [version]` | Show or switch model (`opus`/`sonnet`/`haiku`/`fable`, optional version, or full ID) |

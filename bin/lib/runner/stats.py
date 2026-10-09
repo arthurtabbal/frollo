@@ -1,5 +1,10 @@
 from ..theme import DIM, RESET, YELLOW
 
+
+def _without_autowrap(content):
+    """Render a stats update without letting a long last line scroll the pane."""
+    return f"\033[?7l{content}\033[?7h"
+
 # Preços por milhão de tokens (input, output). Prefixos específicos antes do
 # genérico correspondente — dict preserva ordem de inserção e _model_price para
 # no primeiro match. claude-opus-4-1/4-0 são as versões antigas (mantêm 15/75);

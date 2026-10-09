@@ -28,7 +28,11 @@ from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
 from .protocol import make_event
 from .render import RenderQueue
-from .stats import _model_ctx_window, _render_ctx_line, _render_quota_line, _render_total_line, _render_turn_line
+from ..session import _visible_user_text, pick_session_entries
+from .stats import (
+    _model_ctx_window, _render_ctx_line, _render_quota_line,
+    _render_total_line, _render_turn_line, _without_autowrap,
+)
 from .text import reset_col
 
 
@@ -47,8 +51,10 @@ _CODEX_LINUX_SANDBOX_WARNING = (
     "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
 _CODEX_IGNORED_NOTIFICATIONS = {
+    "account/updated",
     "mcpServer/startupStatus/updated",
     "remoteControl/status/changed",
+    "thread/goal/cleared",
     "thread/settings/updated",
 }
 
@@ -315,6 +321,118 @@ def _codex_turn_start_params(thread_id, message, images=None, effort=None):
     }
 
 
+def _codex_thread_boot_request(client):
+    """Escolhe entre criar uma thread e retomar a pedida na primeira interação."""
+    resume_id = getattr(client, "resume_id", None) if getattr(client, "first_turn", False) else None
+    common = {
+        "cwd": client.cwd,
+        "approvalPolicy": "never",
+        "sandbox": "danger-full-access",
+    }
+    if resume_id:
+        return "thread/resume", {"threadId": resume_id, "excludeTurns": True, **common}
+    return "thread/start", common
+
+
+def list_codex_sessions(cwd, limit=20):
+    """Lista threads recentes do projeto usando o próprio app-server."""
+    proc = _CodexProcess(cwd)
+    try:
+        proc.start()
+        init_id = proc.send("initialize", {
+            "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True, "requestAttestation": False},
+        })
+        initialized = proc.wait_for(lambda obj: obj.get("id") == init_id, _CODEX_BOOT_TIMEOUT)
+        if "error" in initialized:
+            raise RuntimeError((initialized.get("error") or {}).get("message") or "initialize falhou")
+        proc.send("initialized", request=False)
+        list_id = proc.send("thread/list", {
+            "cwd": str(Path(cwd).resolve()),
+            "limit": limit,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+        })
+        response = proc.wait_for(lambda obj: obj.get("id") == list_id, _CODEX_BOOT_TIMEOUT)
+        if "error" in response:
+            raise RuntimeError((response.get("error") or {}).get("message") or "thread/list falhou")
+        sessions = []
+        for thread in ((response.get("result") or {}).get("data") or []):
+            thread_id = thread.get("id") or thread.get("sessionId")
+            if not thread_id:
+                continue
+            updated_at = thread.get("updatedAt") or thread.get("createdAt")
+            try:
+                timestamp = datetime.fromtimestamp(float(updated_at)).strftime("%d/%m %H:%M")
+            except (TypeError, ValueError, OSError, OverflowError):
+                timestamp = ""
+            preview = thread.get("name") or thread.get("preview") or thread_id
+            sessions.append((thread_id, timestamp, str(preview).replace("\n", " ")))
+        return sessions
+    finally:
+        proc.stop()
+
+
+def _codex_history_messages(thread):
+    """Normaliza turns hidratados pelo app-server em falas visíveis."""
+    messages = []
+
+    def append(role, text):
+        text = (text or "").strip()
+        if not text:
+            return
+        if messages and messages[-1][0] == role:
+            if messages[-1][1] == text:
+                return
+            messages[-1] = (role, messages[-1][1] + "\n\n" + text)
+        else:
+            messages.append((role, text))
+
+    for turn in (thread or {}).get("turns") or []:
+        for item in turn.get("items") or []:
+            typ = item.get("type")
+            if typ == "userMessage":
+                parts = []
+                for content in item.get("content") or []:
+                    if content.get("type") == "text" and content.get("text"):
+                        parts.append(str(content["text"]).strip())
+                    elif content.get("type") in ("image", "localImage"):
+                        parts.append("[imagem]")
+                append("user", _visible_user_text("\n".join(part for part in parts if part)))
+            elif typ == "agentMessage":
+                append("assistant", item.get("text"))
+    return messages
+
+
+def load_codex_conversation(cwd, thread_id):
+    """Lê uma thread para exibição, sem enviá-la novamente ao modelo."""
+    if not thread_id:
+        raise ValueError("id da thread Codex ausente")
+    proc = _CodexProcess(cwd)
+    try:
+        proc.start()
+        init_id = proc.send("initialize", {
+            "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True, "requestAttestation": False},
+        })
+        initialized = proc.wait_for(lambda obj: obj.get("id") == init_id, _CODEX_BOOT_TIMEOUT)
+        if "error" in initialized:
+            raise RuntimeError((initialized.get("error") or {}).get("message") or "initialize falhou")
+        proc.send("initialized", request=False)
+        read_id = proc.send("thread/read", {"threadId": thread_id, "includeTurns": True})
+        response = proc.wait_for(lambda obj: obj.get("id") == read_id, _CODEX_BOOT_TIMEOUT)
+        if "error" in response:
+            raise RuntimeError((response.get("error") or {}).get("message") or "thread/read falhou")
+        thread = (response.get("result") or {}).get("thread") or {}
+        return _codex_history_messages(thread)
+    finally:
+        proc.stop()
+
+
+def pick_codex_session(cwd):
+    return pick_session_entries(list_codex_sessions(cwd), "Threads Codex anteriores")
+
+
 def _codex_done_drain_finished(turn_done, last_event_at, now, grace=_CODEX_DONE_DRAIN_GRACE):
     return bool(turn_done and (now - last_event_at) >= grace)
 
@@ -449,6 +567,8 @@ class _CodexAdapter:
         self.model = None
         self.turn_done = False
         self.inferred_done = False
+        self.compaction_started = False
+        self.compaction_done = False
         self.pending_approvals = {}
         self.resolved_approvals = set()
         # Dedupe de método/item de protocolo sem handler (ver errors.seen_first_time) —
@@ -566,6 +686,13 @@ class _CodexAdapter:
                 out.append(self.event("notice", {
                     "notice": {"level": "info", "message": "waiting on approval", "code": "waiting_on_approval"}
                 }, raw=msg))
+        elif method == "thread/compacted":
+            # Notificação legada; releases atuais também emitem o item
+            # `contextCompaction`. O renderer torna a conclusão idempotente.
+            self.compaction_done = True
+            out.append(self.event("context.compaction.finished", {
+                "status": "completed",
+            }, raw=msg))
         elif method == "item/started":
             out.extend(self._item_started(params.get("item") or {}, params, msg))
         elif method == "item/completed":
@@ -686,6 +813,12 @@ class _CodexAdapter:
 
     def _item_started(self, item, params, raw):
         typ = item.get("type")
+        if typ == "contextCompaction":
+            self.compaction_started = True
+            return [self.event("context.compaction.started", {
+                "status": "in_progress",
+                "trigger": "manual",
+            }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         if typ == "userMessage":
             text = "".join(part.get("text", "") for part in item.get("content", []) if part.get("type") == "text")
             return [self.event("message.user", {"role": "user", "text": text},
@@ -750,6 +883,11 @@ class _CodexAdapter:
 
     def _item_completed(self, item, params, raw):
         typ = item.get("type")
+        if typ == "contextCompaction":
+            self.compaction_done = True
+            return [self.event("context.compaction.finished", {
+                "status": "completed",
+            }, turn_id=params.get("turnId"), item_id=item.get("id"), raw=raw)]
         if typ == "userMessage":
             return []
         if typ == "agentMessage":
@@ -830,6 +968,9 @@ class _CodexRenderer:
         self.turn_done = False
         self.turn_status = None
         self.turn_duration_ms = None
+        self.status_label = "codex pensando…"
+        self.compaction_started = False
+        self.compaction_done = False
         self.thinking_autoresize = cfg.get("thinking_autoresize", True)
         rows = _window_height(client.tmux_srv)
         self._idle_lines = max(8, int(rows * 0.16))
@@ -858,7 +999,7 @@ class _CodexRenderer:
             sys.stdout.write("\n")
             self.spinner_shown = True
         tok_part = f"· {tok/1000:.1f}k tok " if tok >= 1000 else (f"· {tok} tok " if tok else "")
-        sys.stdout.write(f"\r\033[2K{DIM}codex pensando…{RESET}  {DIM}{elapsed:.0f}s {tok_part}{RESET}")
+        sys.stdout.write(f"\r\033[2K{DIM}{self.status_label}{RESET}  {DIM}{elapsed:.0f}s {tok_part}{RESET}")
         sys.stdout.flush()
 
     def clear_status(self):
@@ -1093,6 +1234,12 @@ class _CodexRenderer:
             if usage:
                 self.client._last_codex_usage = usage
                 _write_codex_quota_line(self.client, usage)
+        elif kind == "context.compaction.started":
+            self.compaction_started = True
+            self.status_label = "codex compactando contexto…"
+        elif kind == "context.compaction.finished":
+            self.compaction_started = True
+            self.compaction_done = True
         elif kind == "notice":
             notice = payload.get("notice") or {}
             message = notice.get("message")
@@ -1207,7 +1354,8 @@ def _write_stats(client, renderer, elapsed):
     quota_line = _render_quota_line(quota_usage)
     try:
         fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-        os.write(fd, ("\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line).encode())
+        content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
+        os.write(fd, _without_autowrap(content).encode())
         os.close(fd)
     except OSError:
         pass
@@ -1221,7 +1369,8 @@ def _write_codex_quota_line(client, usage):
     fd = None
     try:
         fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-        os.write(fd, ("\033[4;1H" + _render_quota_line(usage)).encode())
+        content = "\033[4;1H" + _render_quota_line(usage)
+        os.write(fd, _without_autowrap(content).encode())
     except OSError:
         pass
     finally:
@@ -1240,7 +1389,8 @@ def _write_codex_ctx_line(client, ctx_used, ctx_max):
     fd = None
     try:
         fd = os.open(stats_tty, os.O_WRONLY | os.O_NOCTTY)
-        os.write(fd, ("\033[3;1H" + _render_ctx_line(ctx_used, ctx_max)).encode())
+        content = "\033[3;1H" + _render_ctx_line(ctx_used, ctx_max)
+        os.write(fd, _without_autowrap(content).encode())
     except OSError:
         pass
     finally:
@@ -1388,8 +1538,17 @@ def _codex_await(proc, adapter, renderer, request_id, label, timeout=_CODEX_BOOT
 
 
 def run_codex_turn(client, message, images=None):
+    return _run_codex_operation(client, message, images=images, compact=False)
+
+
+def run_codex_compact(client):
+    return _run_codex_operation(client, None, compact=True)
+
+
+def _run_codex_operation(client, message, images=None, compact=False):
     reset_col()
     client._last_response_text = ""
+    client._last_turn_completed = False
 
     cfg = config.load()
     proc = getattr(client, "_codex_proc", None)
@@ -1420,12 +1579,16 @@ def run_codex_turn(client, message, images=None):
 
     adapter.turn_done = False
     adapter.inferred_done = False
+    adapter.compaction_started = False
+    adapter.compaction_done = False
     adapter.turn_id = None
     adapter.pending_approvals.clear()
     adapter.resolved_approvals.clear()
     adapter.unknown_keys.clear()
 
     renderer = _CodexRenderer(client, cfg, None, time.time())
+    if compact:
+        renderer.status_label = "codex compactando contexto…"
     render = None
 
     _fd = sys.stdin.fileno()
@@ -1460,19 +1623,16 @@ def run_codex_turn(client, message, images=None):
             # First POC defaults to permissive execution in both Frollo modes.
             # Approval support is present below, but workspace sandbox is still too
             # noisy in the current local bubblewrap environment to make it default UX.
-            thread_id_req = proc.send("thread/start", {
-                "cwd": client.cwd,
-                "approvalPolicy": "never",
-                "sandbox": "danger-full-access",
-            })
-            thread_result = _codex_await(proc, adapter, renderer, thread_id_req, "thread/start")
+            thread_method, thread_params = _codex_thread_boot_request(client)
+            thread_id_req = proc.send(thread_method, thread_params)
+            thread_result = _codex_await(proc, adapter, renderer, thread_id_req, thread_method)
             if thread_result is None:
                 return False
             thread_id = ((thread_result.get("result") or {}).get("thread") or {}).get("id")
             if not thread_id:
                 renderer._report_error({
                     "error": {
-                        "message": "thread/start respondeu sem id de thread",
+                        "message": f"{thread_method} respondeu sem id de thread",
                         "code": "no_thread_id",
                         "source": "transport",
                         "severity": "fatal",
@@ -1482,10 +1642,15 @@ def run_codex_turn(client, message, images=None):
             client._codex_thread_id = thread_id
 
         thread_id = client._codex_thread_id
-        proc.send(
-            "turn/start",
-            _codex_turn_start_params(thread_id, message, images=images, effort=getattr(client, "effort", None)),
-        )
+        if compact:
+            compact_id = proc.send("thread/compact/start", {"threadId": thread_id})
+            if _codex_await(proc, adapter, renderer, compact_id, "thread/compact/start") is None:
+                return False
+        else:
+            proc.send(
+                "turn/start",
+                _codex_turn_start_params(thread_id, message, images=images, effort=getattr(client, "effort", None)),
+            )
 
         saw_idle = False
         last_event_at = time.monotonic()
@@ -1562,7 +1727,27 @@ def run_codex_turn(client, message, images=None):
             sys.stdout.flush()
         renderer.clear_status()
         elapsed = time.time() - renderer.start_time
-        _write_stats(client, renderer, elapsed)
+        if compact:
+            if adapter.compaction_done and renderer.turn_status not in ("failed", "error", "interrupted"):
+                sys.stdout.write(f"\n{DIM}contexto compactado{RESET}\n")
+                sys.stdout.flush()
+            else:
+                code = "compact_failed" if adapter.compaction_done else "compact_missing_completion"
+                message = (
+                    "a compactação do Codex falhou"
+                    if adapter.compaction_done
+                    else "o Codex encerrou sem confirmar a compactação"
+                )
+                errors.report(
+                    "codex/compact", message,
+                    severity="error", code=code,
+                    detail=proc.tail_stderr(), tmux_srv=client.tmux_srv,
+                )
+        else:
+            _write_stats(client, renderer, elapsed)
+        client._last_turn_completed = bool(
+            adapter.turn_done and renderer.turn_status not in ("failed", "error", "interrupted")
+        )
         client.first_turn = False
         return False
     finally:

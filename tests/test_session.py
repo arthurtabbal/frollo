@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.session import _load_sessions, _first_user_text, pick_session
+from lib.session import (
+    _first_user_text, _load_sessions, _session_messages, _visible_user_text,
+    load_session_messages, pick_session,
+)
 
 
 def _write_jsonl(path, events):
@@ -122,6 +125,62 @@ class TestLoadSessions:
         sessions = _load_sessions(tmp_path)
         assert len(sessions) == 1
         assert sessions[0][2] == "depois do clear"
+
+
+class TestSessionMessages:
+    def test_normaliza_so_falas_visiveis_sem_duplicar_queue(self):
+        events = [
+            {"type": "queue-operation", "operation": "enqueue", "content": "oi"},
+            {"type": "user", "message": {"content": "oi"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "interno"},
+                {"type": "text", "text": "resposta"},
+                {"type": "tool_use", "name": "Bash"},
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "saída"},
+            ]}},
+            {"type": "assistant", "isSidechain": True, "message": {"content": [
+                {"type": "text", "text": "subagente"},
+            ]}},
+        ]
+
+        assert _session_messages(events) == [
+            ("user", "oi"),
+            ("assistant", "resposta"),
+        ]
+
+    def test_schema_antigo_usa_queue_quando_nao_ha_user(self):
+        assert _session_messages([
+            {"type": "queue-operation", "operation": "enqueue", "content": "mensagem antiga"},
+        ]) == [("user", "mensagem antiga")]
+
+    def test_remove_envelope_de_contexto_interrompido_e_preserva_imagem(self):
+        content = (
+            "[imagem]\n"
+            "[contexto local preservado pelo Frollo: use para continuidade]\n\n"
+            "=== mensagem do usuário nesse turno ===\nantiga\n\n"
+            "=== nova mensagem do usuário ===\nnova"
+        )
+
+        assert _visible_user_text(content) == "[imagem]\nnova"
+
+    def test_carrega_id_explicito_do_diretorio_do_projeto(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        sessions = home / ".claude" / "projects" / "-repo"
+        sessions.mkdir(parents=True)
+        _write_jsonl(sessions / "session-1.jsonl", [
+            {"type": "user", "message": {"content": "pergunta"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "resposta"},
+            ]}},
+        ])
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        assert load_session_messages("/repo", "session-1") == [
+            ("user", "pergunta"),
+            ("assistant", "resposta"),
+        ]
 
 
 class TestPickSessionErrorLogging:

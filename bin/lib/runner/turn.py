@@ -46,6 +46,24 @@ def _tool_result_text(content):
     return str(content or "")
 
 
+def _message_blocks(event):
+    """Retorna somente blocos estruturados de ``message.content``.
+
+    O stream-json usa lista para tool_use/tool_result, mas comandos locais como
+    ``/compact`` também podem ecoar um evento user com conteúdo textual simples.
+    Iterar essa string como blocos transforma cada caractere em um suposto dict.
+    """
+    message = event.get("message") or {}
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content", [])
+    if isinstance(content, dict):
+        content = [content]
+    if not isinstance(content, list):
+        return []
+    return [block for block in content if isinstance(block, dict)]
+
+
 def _looks_like_user_question_tool(tool_name, tool_input, err_text):
     name = (tool_name or "").lower()
     text = (err_text or "").lower()
@@ -185,6 +203,12 @@ class Turn:
         self.result_cost = None
         self.result_in_tok = None
         self.result_out_tok = None
+        self.local_command = None
+        self.compaction_started = False
+        self.compaction_result = None
+        self.compaction_error = None
+        self.compaction_metadata = {}
+        self._compaction_terminal_event_emitted = False
         self._stdout_json_buf = ""
         self._emit("turn.started", {"status": "in_progress"})
 
@@ -243,8 +267,9 @@ class Turn:
                 wait_part = f"aguardando {waiting:.0f}s"
             sys.stdout.write(f"\r\033[2K{YELLOW}⏳{RESET}  {YELLOW}rate limit{RESET}  {wait_part}")
         else:
+            status = "compactando contexto…" if self.compaction_started and not self.compaction_result else "pensando…"
             sys.stdout.write(
-                f"\r\033[2K{flame}{RESET}  {glow}pensando…{RESET}  {DIM}{elapsed:.0f}s {tok_part}{RESET}"
+                f"\r\033[2K{flame}{RESET}  {glow}{status}{RESET}  {DIM}{elapsed:.0f}s {tok_part}{RESET}"
             )
         sys.stdout.flush()
 
@@ -331,9 +356,11 @@ class Turn:
                 self.render.resume()
         elif etype == "result":
             self._handle_result(event)
+        elif etype == "system":
+            self._handle_system(event)
         elif etype == "rate_limit_event":
             self._handle_rate_limit_event(event)
-        elif etype not in ("system", None):
+        elif etype is not None:
             with open(RUNDIR / "events.log", "a") as f:
                 f.write(json.dumps(event) + "\n")
             # Lacuna de cobertura do protocolo, não falha do turno: fica no
@@ -344,6 +371,45 @@ class Turn:
                 severity="warning", code="unknown_event_type", raw=event,
                 chat=False, tools=False,
             )
+
+    def _emit_compaction_terminal(self, kind, payload, event):
+        if self._compaction_terminal_event_emitted:
+            return
+        self._compaction_terminal_event_emitted = True
+        self._emit(kind, payload, raw=event)
+
+    def _handle_system(self, event):
+        subtype = event.get("subtype")
+        if subtype == "status":
+            if event.get("status") == "compacting" and not self.compaction_started:
+                self.compaction_started = True
+                self._emit("context.compaction.started", {
+                    "status": "in_progress",
+                    "trigger": "manual" if self.local_command == "compact" else None,
+                }, raw=event)
+            result = event.get("compact_result")
+            if result:
+                self.compaction_result = result
+                self.compaction_error = event.get("compact_error")
+                if result == "failed":
+                    self._emit_compaction_terminal("context.compaction.failed", {
+                        "status": "failed",
+                        "error": self.compaction_error,
+                    }, event)
+                else:
+                    self._emit_compaction_terminal("context.compaction.finished", {
+                        "status": "completed",
+                        "metadata": dict(self.compaction_metadata),
+                    }, event)
+        elif subtype == "compact_boundary":
+            metadata = event.get("compact_metadata") or event.get("compactMetadata") or {}
+            self.compaction_started = True
+            self.compaction_result = "success"
+            self.compaction_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            self._emit_compaction_terminal("context.compaction.finished", {
+                "status": "completed",
+                "metadata": dict(self.compaction_metadata),
+            }, event)
 
     # -- stream_event ---------------------------------------------------
 
@@ -503,7 +569,7 @@ class Turn:
     # -- assistant / user -------------------------------------------------
 
     def _handle_assistant(self, event):
-        for block in event.get("message", {}).get("content", []):
+        for block in _message_blocks(event):
             if block.get("type") == "tool_use":
                 log_tool_call(block, self.client.nvim_pane, self.client.tmux_srv, self.client.editor_bin, render=self.render)
                 tool_id = block.get("id", "")
@@ -538,7 +604,7 @@ class Turn:
                     }, item_id=tool_id, raw=block)
 
     def _handle_user(self, event):
-        for block in event.get("message", {}).get("content", []):
+        for block in _message_blocks(event):
             if block.get("type") == "tool_result":
                 tool_id = block.get("tool_use_id", "")
                 tool_name = self._tool_names.get(tool_id, "")
@@ -617,6 +683,7 @@ class Turn:
     # -- result / rate limit -------------------------------------------------
 
     def _handle_result(self, event):
+        self.local_command = event.get("local_command") or self.local_command
         sid = event.get("session_id")
         if sid:
             self.client.session_id = sid
@@ -649,6 +716,42 @@ class Turn:
                 }
             }, raw=event)
         self._emit_deferred_thinking_notice()
+        if self.local_command == "compact":
+            self.render.join()
+            self._clear_status()
+            if self.compaction_result == "success":
+                metadata = self.compaction_metadata
+                pre = metadata.get("preTokens", metadata.get("pre_tokens"))
+                post = metadata.get("postTokens", metadata.get("post_tokens"))
+                numeric = (int, float)
+                token_note = (
+                    f"  {DIM}({pre:,} → {post:,} tokens){RESET}"
+                    if isinstance(pre, numeric) and isinstance(post, numeric)
+                    else ""
+                )
+                sys.stdout.write(f"\n{DIM}contexto compactado{RESET}{token_note}\n")
+                sys.stdout.flush()
+            elif self.compaction_result == "failed":
+                errors.report(
+                    "claude/compact",
+                    self.compaction_error or event.get("result") or "compactação falhou",
+                    severity="warning", code="compact_failed", raw=event,
+                    tmux_srv=getattr(self.client, "tmux_srv", None), render=self.render,
+                )
+            else:
+                errors.report(
+                    "claude/compact", "o Claude encerrou sem confirmar a compactação",
+                    severity="error", code="compact_missing_completion", raw=event,
+                    tmux_srv=getattr(self.client, "tmux_srv", None), render=self.render,
+                )
+        elif self.compaction_result == "failed":
+            # Auto-compact pode falhar e o turno ainda seguir. É degradação
+            # esperada, então não interrompe o chat, mas nunca some do log/pane.
+            errors.report(
+                "claude/compact", self.compaction_error or "auto-compact falhou",
+                severity="warning", code="compact_failed", raw=event, chat=False,
+                tmux_srv=getattr(self.client, "tmux_srv", None), render=self.render,
+            )
         self._emit("turn.failed" if failed else "turn.finished", {
             "status": "failed" if failed else "completed",
             "duration_ms": int((time.time() - self.start_time) * 1000),

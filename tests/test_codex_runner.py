@@ -19,7 +19,10 @@ from lib.runner.codex import (
     _codex_preferred_command_output,
     _codex_quota_for_stats,
     _codex_done_drain_finished,
+    _codex_history_messages,
     _codex_turn_start_params,
+    _codex_thread_boot_request,
+    load_codex_conversation,
     _write_stats,
 )
 from lib.runner.protocol import SCHEMA
@@ -34,6 +37,78 @@ def _adapter():
 
 
 class TestCodexAdapter:
+    def test_boot_cria_thread_sem_resume(self):
+        client = MagicMock(cwd="/repo", resume_id=None, first_turn=True)
+
+        method, params = _codex_thread_boot_request(client)
+
+        assert method == "thread/start"
+        assert params["cwd"] == "/repo"
+
+    def test_boot_retoma_thread_sem_hidratar_historico(self):
+        client = MagicMock(cwd="/repo", resume_id="thread-1", first_turn=True)
+
+        method, params = _codex_thread_boot_request(client)
+
+        assert method == "thread/resume"
+        assert params["threadId"] == "thread-1"
+        assert params["excludeTurns"] is True
+
+    def test_normaliza_historico_hidratado_em_falas_visiveis(self):
+        thread = {"turns": [
+            {"items": [
+                {"type": "userMessage", "content": [
+                    {"type": "localImage", "path": "/tmp/imagem.png"},
+                    {"type": "text", "text": "pergunta"},
+                ]},
+                {"type": "reasoning", "summary": [{"text": "interno"}]},
+                {"type": "agentMessage", "phase": "commentary", "text": "checando"},
+                {"type": "agentMessage", "phase": "final_answer", "text": "resposta"},
+            ]},
+            {"items": [
+                {"type": "userMessage", "content": [{"type": "text", "text": "continua"}]},
+            ]},
+        ]}
+
+        assert _codex_history_messages(thread) == [
+            ("user", "[imagem]\npergunta"),
+            ("assistant", "checando\n\nresposta"),
+            ("user", "continua"),
+        ]
+
+    def test_le_historico_via_thread_read_com_turns(self, monkeypatch):
+        class FakeProcess:
+            def __init__(self, cwd):
+                self.cwd = cwd
+                self.calls = []
+                self.responses = [
+                    {"id": 1, "result": {}},
+                    {"id": 2, "result": {"thread": {"turns": [{"items": [
+                        {"type": "userMessage", "content": [{"type": "text", "text": "oi"}]},
+                    ]}]}}},
+                ]
+                self.stopped = False
+
+            def start(self):
+                pass
+
+            def send(self, method, params=None, request=True):
+                self.calls.append((method, params, request))
+                return len([call for call in self.calls if call[2]])
+
+            def wait_for(self, predicate, timeout):
+                return self.responses.pop(0)
+
+            def stop(self):
+                self.stopped = True
+
+        fake = FakeProcess("/repo")
+        monkeypatch.setattr(codex_mod, "_CodexProcess", lambda cwd: fake)
+
+        assert load_codex_conversation("/repo", "thread-1") == [("user", "oi")]
+        assert ("thread/read", {"threadId": "thread-1", "includeTurns": True}, True) in fake.calls
+        assert fake.stopped is True
+
     def test_normaliza_output_fragmentado_do_pytest(self):
         text = (
             "tests/test_alpha.py\n\n.\n\n.\n\n[ 50%]\n\n"
@@ -264,12 +339,37 @@ class TestCodexAdapter:
         assert events[0]["kind"] == "notice"
         assert events[0]["payload"]["notice"]["code"] == "linux_sandbox_userns"
 
+    def test_mapeia_ciclo_de_compactacao_de_contexto(self):
+        adapter = _adapter()
+
+        started = adapter.normalize({
+            "method": "item/started",
+            "params": {
+                "turnId": "turn-compact",
+                "item": {"type": "contextCompaction", "id": "compact-1"},
+            },
+        })
+        completed = adapter.normalize({
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn-compact",
+                "item": {"type": "contextCompaction", "id": "compact-1"},
+            },
+        })
+
+        assert started[0]["kind"] == "context.compaction.started"
+        assert completed[0]["kind"] == "context.compaction.finished"
+        assert adapter.compaction_started is True
+        assert adapter.compaction_done is True
+
     def test_ignora_notifications_benignas_de_estado(self):
         adapter = _adapter()
 
         for method in (
+            "account/updated",
             "remoteControl/status/changed",
             "mcpServer/startupStatus/updated",
+            "thread/goal/cleared",
             "thread/settings/updated",
         ):
             assert adapter.normalize({"method": method, "params": {}}) == []
@@ -437,6 +537,24 @@ class TestCodexRenderer:
         assert "codex" in out
         assert "5%" in out
         assert renderer.client._last_codex_usage["limits"][0]["pct"] == 5
+
+    def test_compactacao_troca_status_e_confirma_conclusao(self):
+        renderer, _ = self._renderer()
+
+        renderer.handle({
+            "kind": "context.compaction.started",
+            "payload": {"status": "in_progress"},
+            "provider": {},
+        })
+        assert renderer.status_label == "codex compactando contexto…"
+        assert renderer.compaction_started is True
+
+        renderer.handle({
+            "kind": "context.compaction.finished",
+            "payload": {"status": "completed"},
+            "provider": {},
+        })
+        assert renderer.compaction_done is True
 
     def test_write_stats_preserva_cota_codex_cacheada(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex_mod, "RUNDIR", tmp_path)

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from lib.usage import _parse, _fmt_reset
-from lib.runner.stats import _render_quota_line
+from lib.runner.stats import _render_quota_line, _without_autowrap
 
 # Payload real (reduzido aos campos que consumimos).
 _SAMPLE = {
@@ -86,3 +86,9 @@ def test_render_empty_and_fallback():
     legacy = {"session_pct": 3, "week_pct": 9, "session_reset": "21:30"}
     line = _render_quota_line(legacy)
     assert "sessão" in line and "semana" in line and "3%" in line and "9%" in line
+
+
+def test_stats_update_temporarily_disables_terminal_autowrap():
+    rendered = _without_autowrap("\033[4;1Hlinha longa")
+
+    assert rendered == "\033[?7l\033[4;1Hlinha longa\033[?7h"

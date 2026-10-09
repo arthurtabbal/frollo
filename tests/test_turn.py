@@ -112,6 +112,56 @@ class TestFrolloEvents:
         assert turn.frollo_events[-1]["session_id"] == "sess-123"
         assert turn.frollo_events[-1]["payload"]["status"] == "completed"
 
+    def test_mapeia_compactacao_do_claude_no_protocolo(self, fake_client, capsys):
+        turn = _turn(fake_client)
+
+        turn.handle_event({"type": "system", "subtype": "status", "status": "compacting"})
+        turn.handle_event({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "preTokens": 42000, "postTokens": 12000},
+        })
+        turn.handle_event({
+            "type": "result", "subtype": "success", "is_error": False,
+            "local_command": "compact", "session_id": "sess-123",
+        })
+
+        kinds = [event["kind"] for event in turn.frollo_events]
+        assert "context.compaction.started" in kinds
+        assert "context.compaction.finished" in kinds
+        assert "context.compaction.failed" not in kinds
+        assert turn.compaction_metadata["preTokens"] == 42000
+        assert "contexto compactado" in capsys.readouterr().out
+
+    def test_falha_de_compactacao_do_claude_e_visivel(self, fake_client):
+        turn = _turn(fake_client)
+
+        turn.handle_event({"type": "system", "subtype": "status", "status": "compacting"})
+        turn.handle_event({
+            "type": "system", "subtype": "status", "status": None,
+            "compact_result": "failed", "compact_error": "Not enough messages to compact.",
+        })
+        with patch("lib.runner.turn.errors.report") as report:
+            turn.handle_event({
+                "type": "result", "subtype": "success", "is_error": False,
+                "local_command": "compact", "result": "Not enough messages to compact.",
+            })
+
+        assert "context.compaction.failed" in [event["kind"] for event in turn.frollo_events]
+        assert report.call_args.args[1] == "Not enough messages to compact."
+        assert report.call_args.kwargs["code"] == "compact_failed"
+
+    def test_compact_sem_confirmacao_reporta_falha_de_protocolo(self, fake_client):
+        turn = _turn(fake_client)
+
+        with patch("lib.runner.turn.errors.report") as report:
+            turn.handle_event({
+                "type": "result", "subtype": "success", "is_error": False,
+                "local_command": "compact", "result": "",
+            })
+
+        assert report.call_args.kwargs["code"] == "compact_missing_completion"
+
 
 class TestMessageStart:
     def test_atualiza_tokens_e_modelo(self, fake_client):
@@ -246,6 +296,17 @@ class TestTextDelta:
 
 
 class TestToolUse:
+    def test_evento_user_textual_do_compact_nao_e_interpretado_como_bloco(self, fake_client):
+        turn = _turn(fake_client)
+
+        with patch("lib.runner.turn.log_tool_result") as mock_log_result:
+            turn.handle_event({
+                "type": "user",
+                "message": {"role": "user", "content": "/compact"},
+            })
+
+        mock_log_result.assert_not_called()
+
     def test_registra_tool_use_e_chama_log_tool_call(self, fake_client):
         turn = _turn(fake_client)
         with patch("lib.runner.turn.log_tool_call") as mock_log_call:

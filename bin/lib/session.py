@@ -13,6 +13,11 @@ from .theme import BG_USER, DIM, RESET, WHITE
 from .tools import RUNDIR
 
 
+def _sessions_dir(cwd):
+    project_key = cwd.replace('/', '-')
+    return Path.home() / ".claude" / "projects" / project_key
+
+
 def pick_session(cwd):
     """Picker interativo de sessões anteriores. Retorna session ID ou None."""
     try:
@@ -60,6 +65,112 @@ def _is_session_preview_noise(content):
     ))
 
 
+def _visible_user_text(content):
+    """Remove envelopes internos que o Frollo anexa ao prompt real.
+
+    O backend precisa do contexto interrompido, mas o histórico visual deve
+    reconstruir o que a pessoa digitou, não reimprimir esse transporte interno.
+    """
+    content = (content or "").strip()
+    context_marker = "[contexto local preservado pelo Frollo:"
+    message_marker = "=== nova mensagem do usuário ==="
+    context_pos = content.find(context_marker)
+    if context_pos >= 0 and message_marker in content:
+        # No Codex, imagens são itens anteriores ao texto; mantenha apenas esses
+        # marcadores visuais ao remover o envelope de continuidade.
+        prefix = "\n".join(
+            line for line in content[:context_pos].splitlines() if line.strip() == "[imagem]"
+        )
+        content = content.rsplit(message_marker, 1)[1].strip()
+        if prefix:
+            content = prefix + "\n" + content
+    return "" if _is_session_preview_noise(content) else content
+
+
+def _content_text(content, *, image_label=False):
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            parts.append(str(block["text"]).strip())
+        elif image_label and block.get("type") in ("image", "localImage"):
+            parts.append("[imagem]")
+    return "\n".join(part for part in parts if part)
+
+
+def _append_message(messages, role, text):
+    text = (text or "").strip()
+    if not text:
+        return
+    if messages and messages[-1][0] == role:
+        if messages[-1][1] == text:
+            return
+        messages[-1] = (role, messages[-1][1] + "\n\n" + text)
+        return
+    messages.append((role, text))
+
+
+def _session_messages(events):
+    """Normaliza um transcript Claude em ``[(role, text)]`` para exibição."""
+    has_user_events = any(
+        isinstance(ev, dict) and ev.get("type") == "user" and not ev.get("isMeta")
+        for ev in events
+    )
+    messages = []
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("isMeta") or ev.get("isSidechain"):
+            continue
+        typ = ev.get("type")
+        if typ == "queue-operation" and ev.get("operation") == "enqueue":
+            if has_user_events:
+                continue
+            _append_message(messages, "user", _visible_user_text(ev.get("content")))
+            continue
+        if typ not in ("user", "assistant"):
+            continue
+        content = (ev.get("message") or {}).get("content", "")
+        text = _content_text(content, image_label=(typ == "user"))
+        if typ == "user":
+            text = _visible_user_text(text)
+        _append_message(messages, typ, text)
+    return messages
+
+
+def load_session_messages(cwd, session_id=None):
+    """Carrega falas visíveis de uma sessão Claude sem alterar o contexto.
+
+    ``session_id=None`` representa o ``--continue`` do CLI e escolhe o JSONL
+    mais recente do projeto. Falhas de I/O sobem para o chamador reportar pelo
+    sink único de erros.
+    """
+    sessions_dir = _sessions_dir(cwd)
+    if session_id:
+        path = (sessions_dir / f"{session_id}.jsonl").resolve()
+        if path.parent != sessions_dir.resolve():
+            raise ValueError("id de sessão inválido")
+        candidates = [path]
+    else:
+        candidates = sorted(
+            sessions_dir.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True
+        )
+    if not candidates or not candidates[0].exists():
+        raise FileNotFoundError("transcript da sessão Claude não encontrado")
+
+    events = []
+    with open(candidates[0]) as fp:
+        for line in fp:
+            try:
+                events.append(json.loads(line))
+            except (json.JSONDecodeError, TypeError):
+                continue
+    return _session_messages(events)
+
+
 def _load_sessions(sessions_dir, limit=20):
     """Varre os .jsonl de um diretório de projeto e monta [(session_id, ts_str, first_msg)],
     mais recentes primeiro. Função pura (sem I/O de terminal) — testável isoladamente."""
@@ -90,12 +201,19 @@ def _load_sessions(sessions_dir, limit=20):
 
 
 def _pick_session_impl(cwd):
-    project_key = cwd.replace('/', '-')
-    sessions_dir = Path.home() / ".claude" / "projects" / project_key
+    sessions_dir = _sessions_dir(cwd)
     if not sessions_dir.exists():
         return None
 
     sessions = _load_sessions(sessions_dir)
+    if not sessions:
+        return None
+
+    return pick_session_entries(sessions, "Sessões anteriores")
+
+
+def pick_session_entries(sessions, title="Sessões anteriores"):
+    """Escolhe uma entrada ``(id, data, preview)`` numa lista já carregada."""
     if not sessions:
         return None
 
@@ -107,7 +225,7 @@ def _pick_session_impl(cwd):
 
     def render():
         sys.stdout.write('\033[2J\033[H')
-        sys.stdout.write(f"{DIM}Sessões anteriores — ↑↓ navegar · Enter confirmar · Esc cancelar{RESET}\r\n\r\n")
+        sys.stdout.write(f"{DIM}{title} — ↑↓ navegar · Enter confirmar · Esc cancelar{RESET}\r\n\r\n")
         for i, (sid, ts, msg) in enumerate(sessions):
             preview = msg[:65] + "…" if len(msg) > 65 else msg
             if i == selected:

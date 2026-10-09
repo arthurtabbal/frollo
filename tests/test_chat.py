@@ -7,9 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from chat import ClaudeClient, _normalize_model_choice, _short_model, _usage_refresh_seconds
+from chat import (
+    ClaudeClient, _argv_without_resume, _history_user_block, _normalize_model_choice,
+    _safe_history_text, _short_model, _usage_refresh_seconds,
+)
 from lib.runner.capabilities import backend_profile, supports
-from lib.theme import DIM, RESET, WHITE
+from lib.theme import BG_USER, DIM, RESET, WHITE
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +57,63 @@ class TestPasteEditorAusente:
             client._paste()
         out = capsys.readouterr().out
         assert "meu-editor-magico" in out
+
+
+class TestResumeArgv:
+    def test_remove_resume_sem_id_sem_engolir_backend(self):
+        assert _argv_without_resume(["chat.py", "--resume", "--backend", "codex"]) == [
+            "chat.py", "--backend", "codex",
+        ]
+
+    def test_remove_resume_com_id_curto_ou_igual(self):
+        assert _argv_without_resume(["chat.py", "-r", "thread-1", "--backend", "codex"]) == [
+            "chat.py", "--backend", "codex",
+        ]
+        assert _argv_without_resume(["chat.py", "--resume=thread-1", "--effort", "max"]) == [
+            "chat.py", "--effort", "max",
+        ]
+
+
+class TestResumeHistory:
+    def test_sanitiza_controles_sem_perder_quebras(self):
+        text = "linha 1\n\x1b[2Jlinha 2\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"
+        assert _safe_history_text(text) == "linha 1\nlinha 2link"
+
+    def test_bloco_humano_tem_estilo_do_input_sem_rotulo(self):
+        block = _history_user_block("linha 1\nlinha 2", cols=20)
+
+        assert "você" not in block
+        assert "  linha 1" in block
+        assert "  linha 2" in block
+        assert block.count(BG_USER) == 2
+
+    def test_imprime_falas_anteriores_antes_do_prompt(self, client, capsys):
+        client.backend = "claude"
+        client.backend_profile = backend_profile("claude")
+        client.resume_id = "session-1"
+        with patch("chat.load_session_messages", return_value=[
+            ("user", "pergunta antiga"),
+            ("assistant", "resposta antiga"),
+        ]) as load:
+            client._print_resumed_history()
+
+        out = capsys.readouterr().out
+        assert "conversa anterior" in out
+        assert "pergunta antiga" in out
+        assert "resposta antiga" in out
+        assert "você" not in out
+        assert "\nclaude" not in out
+        assert "fim da conversa anterior" in out
+        load.assert_called_once_with("/tmp", "session-1")
+
+    def test_codex_usa_thread_read_para_historico(self, client):
+        client.backend = "codex"
+        client.backend_profile = backend_profile("codex")
+        client.resume_id = "thread-1"
+        with patch("chat.load_codex_conversation", return_value=[("user", "oi")]) as load:
+            client._print_resumed_history()
+
+        load.assert_called_once_with("/tmp", "thread-1")
 
 
 class TestPromptBadgeDeModelo:
@@ -119,14 +179,16 @@ class TestBackendCapabilities:
         assert supports(profile, "effort_selection")
         assert supports(profile, "agent_selection")
         assert supports(profile, "session_resume")
+        assert supports(profile, "manual_compaction")
 
     def test_codex_declara_limites_atuais(self):
         profile = backend_profile("codex")
         assert not supports(profile, "model_selection")
         assert supports(profile, "effort_selection")
         assert not supports(profile, "agent_selection")
-        assert not supports(profile, "session_resume")
+        assert supports(profile, "session_resume")
         assert supports(profile, "reasoning_stream")
+        assert supports(profile, "manual_compaction")
 
     def test_codex_nao_restaura_cache_de_cota_claude_no_startup(self):
         c = ClaudeClient(backend="codex")
@@ -150,6 +212,21 @@ class TestBackendCapabilities:
         c._start_codex_usage_pane.assert_called_once_with()
         c._start_claude_usage_pane.assert_not_called()
 
+    def test_startup_stats_de_resume_codex_nao_carrega_cache_claude(self, tmp_path, monkeypatch):
+        c = ClaudeClient(backend="codex")
+        c._stats_tty = MagicMock(return_value=str(tmp_path / "stats-tty"))
+        (tmp_path / "stats-tty").write_text("")
+        c._load_cached_usage = MagicMock()
+        c._start_codex_usage_pane = MagicMock()
+        monkeypatch.setattr("chat.os.open", MagicMock(return_value=7))
+        monkeypatch.setattr("chat.os.write", MagicMock())
+        monkeypatch.setattr("chat.os.close", MagicMock())
+
+        c._startup_stats()
+
+        c._load_cached_usage.assert_not_called()
+        c._start_codex_usage_pane.assert_called_once_with()
+
     def test_stats_title_codex_usa_email_do_codex(self):
         c = ClaudeClient(backend="codex")
         c.tmux_srv = "srv"
@@ -162,6 +239,42 @@ class TestBackendCapabilities:
         assert run.call_args.args[0] == [
             "tmux", "-L", "srv", "select-pane", "-t", "%42", "-T", "〰 stats · codex@example.com",
         ]
+
+
+class TestCompactCommand:
+    def test_claude_encaminha_com_instrucoes_ao_comando_nativo(self, client):
+        client.backend_profile = backend_profile("claude")
+
+        with patch("chat.run_turn", return_value=False) as compact:
+            client._compact("preserve as decisões arquiteturais")
+
+        compact.assert_called_once_with(client, "/compact preserve as decisões arquiteturais")
+
+    def test_claude_nao_consome_contexto_interrompido_ao_compactar(self, client):
+        client.backend_profile = backend_profile("claude")
+        client._interrupted_context_path().write_text("continuidade pendente")
+
+        with patch("chat.run_turn", return_value=False):
+            client._compact()
+
+        assert client._interrupted_context_path().read_text() == "continuidade pendente"
+
+    def test_codex_usa_rpc_nativo(self, client):
+        client.backend_profile = backend_profile("codex")
+
+        with patch("chat.run_codex_compact", return_value=False) as compact:
+            client._compact()
+
+        compact.assert_called_once_with(client)
+
+    def test_codex_recusa_instrucoes_que_o_rpc_nao_suporta(self, client, capsys):
+        client.backend_profile = backend_profile("codex")
+
+        with patch("chat.run_codex_compact") as compact:
+            client._compact("foque nos testes")
+
+        compact.assert_not_called()
+        assert "não aceita instruções" in capsys.readouterr().out
 
 
 class TestUsageRefresh:
@@ -237,6 +350,24 @@ class TestInterruptedContext:
                 client._run_turn("para no meio")
 
         assert client._interrupted_turn_capture["message"] == "para no meio"
+
+    def test_falha_de_protocolo_preserva_contexto_para_proximo_turno(self, client, capsys):
+        client.backend_profile = backend_profile("claude")
+
+        def falha_backend(current_client, _message, images=None):
+            current_client._last_response_text = "resposta antes do corte"
+            current_client._last_turn_completed = False
+            return False
+
+        with patch("chat.run_turn", side_effect=falha_backend):
+            result = client._run_turn("pergunta cujo stdout foi truncado")
+
+        assert result is False
+        content = client._interrupted_context_path().read_text()
+        assert "falha_do_backend" in content
+        assert "pergunta cujo stdout foi truncado" in content
+        assert "resposta antes do corte" in content
+        assert "contexto parcial preservado" in capsys.readouterr().out
 
     def test_cancelamento_repetido_nao_aninha_contexto_injetado(self, client):
         client.backend_profile = backend_profile("claude")

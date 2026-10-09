@@ -24,6 +24,7 @@ fi
 _BACKEND="claude"
 _CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
 _next_is_backend=false
+_is_resume=false
 for _arg in "$@"; do
     if [[ "$_next_is_backend" == "true" ]]; then
         _BACKEND="$_arg"
@@ -33,8 +34,18 @@ for _arg in "$@"; do
     case "$_arg" in
         --backend) _next_is_backend=true ;;
         --backend=*) _BACKEND="${_arg#--backend=}" ;;
+        --resume|--resume=*|-r) _is_resume=true ;;
+        --backed|--backed=*)
+            echo "erro: opção desconhecida: $_arg (você quis dizer --backend?)"
+            exit 2
+            ;;
     esac
 done
+
+if [[ "$_next_is_backend" == "true" ]]; then
+    echo "erro: --backend exige um valor (use claude ou codex)"
+    exit 2
+fi
 
 case "$_BACKEND" in
     codex)
@@ -243,10 +254,6 @@ _river() {
    ~ ~~~~~~~~ ~ ~ ~~ ~ ~ ~ ~ ~~~ \___\    ~~ ~~  ~~ ~ ~~ ~ ~~~~ ~ ~~
 RIVEREOF
 }
-_is_resume=false
-for _arg in "$@"; do
-    [[ "$_arg" == "--resume" || "$_arg" == "-r" ]] && _is_resume=true
-done
 if [[ "$_show_stats" == "true" && "$_is_resume" == "false" ]]; then
     { printf '\033[H'; printf '%s' "$(_river)"; } > "$STATS_TTY" 2>/dev/null || true
 fi

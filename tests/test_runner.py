@@ -110,6 +110,7 @@ class TestClaudeNaoEncontrado:
         finally:
             devnull.close()
 
+        assert fake_client._last_turn_completed is False
         assert report.call_args.args[0] == "claude/protocolo"
         assert report.call_args.kwargs["code"] == "missing_result"
 

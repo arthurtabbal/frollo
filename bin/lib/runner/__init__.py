@@ -19,6 +19,7 @@ from .render import RenderQueue
 from .stats import (
     _model_price, _model_ctx_window,
     _render_quota_line, _render_ctx_line, _render_turn_line, _render_total_line,
+    _without_autowrap,
 )
 from .turn import Turn
 
@@ -199,6 +200,11 @@ def _ensure_proc(client, persistent):
 
 def run_turn(client, message, images=None):
     """Executa um turno completo: subprocess claude, loop de eventos, spinner."""
+    # Contrato lateral com ClaudeClient._run_turn: distingue um turno realmente
+    # delimitado por `result` de um retorno False normal (que também é usado para
+    # "não há retry"). Sem isso, EOF/timeout limpavam a captura local como se o
+    # backend tivesse terminado corretamente.
+    client._last_turn_completed = False
     reset_col()
     client._last_response_text = ""
     has_images = bool(images)
@@ -360,6 +366,16 @@ def run_turn(client, message, images=None):
                     sys.stdout.write("\n")
                     sys.stdout.flush()
 
+        # `/compact` é um comando local do Claude CLI, não um turno do modelo.
+        # Seu `result` traz uso zerado e, se passasse pelo bloco abaixo, apagaria a
+        # barra de contexto e criaria uma linha de stats fictícia.
+        if turn.local_command == "compact":
+            if not persistent:
+                proc.wait()
+            client._last_turn_completed = turn.turn_done
+            client.first_turn = False
+            return False
+
         elapsed = time.time() - turn.start_time
         # Para exibição/acumulado usa os totais agregados do evento 'result' quando
         # disponíveis (cobrem todos os requests do turno); senão cai no último
@@ -410,7 +426,7 @@ def run_turn(client, message, images=None):
                 quota_line = _render_quota_line(getattr(client, "_last_usage", None))
                 content = "\033[H" + turn_line + "\n" + total_line + "\n" + ctx_line + "\n" + quota_line
                 _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
-                os.write(_fd2, content.encode())
+                os.write(_fd2, _without_autowrap(content).encode())
                 os.close(_fd2)
             except OSError:
                 pass
@@ -433,5 +449,6 @@ def run_turn(client, message, images=None):
         if thinking_autoresize and turn is not None and turn.thinking_lines > turn._idle_lines:
             _resize_thinking(client.tmux_srv, "idle")
         termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)
+    client._last_turn_completed = bool(turn is not None and turn.turn_done)
     client.first_turn = False
     return turn.retry_requested if turn is not None else False
