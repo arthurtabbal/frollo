@@ -113,3 +113,13 @@ def log_background_job(job):
     if output_path:
         _log(TOOLS_LOG, f"  {DIM}output: {_shorten_path(output_path)}{RESET}\n")
     _log(TOOLS_LOG, "\n")
+
+
+def log_background_job_status(job):
+    status = job.get("status") or "unknown"
+    icon = "✓" if status == "completed" else "!"
+    _entry(TOOLS_TODO, icon, f"job {job.get('id') or '?'} · {status}")
+    summary = job.get("summary")
+    if summary:
+        _log(TOOLS_LOG, f"  {DIM}{summary}{RESET}\n")
+    _log(TOOLS_LOG, "\n")

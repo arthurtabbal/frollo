@@ -126,6 +126,22 @@ def _terminate_proc(proc, timeout=3.0):
         proc.wait()
 
 
+def _close_proc_stdin(proc):
+    try:
+        stdin = getattr(proc, "stdin", None)
+        if stdin is not None and getattr(stdin, "closed", False) is not True:
+            stdin.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _has_running_background_jobs(client):
+    jobs = getattr(client, "_background_jobs", None)
+    return isinstance(jobs, dict) and any(
+        job.get("status") == "running" for job in jobs.values()
+    )
+
+
 def _ensure_proc(client, persistent):
     """Devolve um processo claude pronto pra receber a mensagem do turno.
 
@@ -237,8 +253,6 @@ def run_turn(client, message, images=None):
         content.append({'type': 'text', 'text': clean_text})
     proc.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}}) + '\n')
     proc.stdin.flush()
-    if not persistent:
-        proc.stdin.close()
 
     # Desabilita echo e modo canônico durante o turno — evita que teclas apareçam no
     # meio do typewriter e permite que qualquer tecla (não só Enter) acorde o select()
@@ -287,7 +301,8 @@ def run_turn(client, message, images=None):
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.15)
             if not ready:
-                if errors.idle_timed_out(last_line_at, time.monotonic(), _CLAUDE_IDLE_TIMEOUT):
+                if (not _has_running_background_jobs(client)
+                        and errors.idle_timed_out(last_line_at, time.monotonic(), _CLAUDE_IDLE_TIMEOUT)):
                     # Silêncio absoluto no stdout, processo ainda vivo — o mesmo
                     # sintoma que motivou o teto de ociosidade do Codex (ver
                     # runner/codex.py): sem isso o turno gira pra sempre.
@@ -396,6 +411,7 @@ def run_turn(client, message, images=None):
                 except (OSError, json.JSONDecodeError):
                     pass
             if not persistent:
+                _close_proc_stdin(proc)
                 proc.wait()
             client._last_turn_completed = turn.turn_done
             client.first_turn = False
@@ -460,6 +476,7 @@ def run_turn(client, message, images=None):
             client._ensure_usage_updater()
 
         if not persistent:
+            _close_proc_stdin(proc)
             proc.wait()
         # persistente: o processo continua vivo pro próximo turno — não fecha
         # stdin nem espera saída (achado do spike: não sairia sozinho mesmo assim).
@@ -471,6 +488,8 @@ def run_turn(client, message, images=None):
         # da fila em vez de esperar a animação terminar em ritmo normal.
         if render is not None:
             render.cancel()
+        if not persistent and proc is not None and (turn is None or not turn.turn_done):
+            _terminate_proc(proc)
         if thinking_autoresize and turn is not None and turn.thinking_lines > turn._idle_lines:
             _resize_thinking(client.tmux_srv, "idle")
         termios.tcsetattr(_fd, termios.TCSADRAIN, _old_term)

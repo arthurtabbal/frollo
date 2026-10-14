@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner.turn import Turn, _background_job_from_result
+from lib.runner.turn import Turn, _background_job_from_result, _background_job_notification
 
 
 @pytest.fixture()
@@ -378,6 +378,49 @@ class TestBackgroundJobs:
         turn.handle_event({"type": "result", "session_id": "sess-123"})
 
         assert fake_client._background_jobs["bg123"]["session_id"] == "sess-123"
+
+    def test_extrai_notificacao_de_conclusao(self):
+        event = {
+            "type": "user",
+            "session_id": "sess-123",
+            "message": {"content": (
+                "<task-notification>\n"
+                "<task-id>bg123</task-id>\n"
+                "<output-file>/tmp/bg123.output</output-file>\n"
+                "<status>completed</status>\n"
+                "<summary>testes passaram</summary>\n"
+                "</task-notification>"
+            )},
+        }
+
+        assert _background_job_notification(event) == {
+            "id": "bg123",
+            "status": "completed",
+            "summary": "testes passaram",
+            "output_path": "/tmp/bg123.output",
+            "session_id": "sess-123",
+        }
+
+    def test_notificacao_atualiza_job_e_emite_conclusao(self, fake_client):
+        turn = _turn(fake_client)
+        fake_client._background_jobs = {
+            "bg123": {"id": "bg123", "description": "Run tests", "status": "running"},
+        }
+        event = {
+            "type": "user",
+            "message": {"content": (
+                "<task-notification><task-id>bg123</task-id>"
+                "<status>completed</status><summary>exit 0</summary></task-notification>"
+            )},
+        }
+
+        with patch("lib.runner.turn.log_background_job_status") as log_status:
+            turn.handle_event(event)
+            turn.handle_event(event)
+
+        assert fake_client._background_jobs["bg123"]["status"] == "completed"
+        assert [e["kind"] for e in turn.frollo_events].count("job.completed") == 1
+        log_status.assert_called_once()
 
 
 class TestToolResultPermissao:

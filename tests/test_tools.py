@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.tools import log_background_job, log_tool_call
+from lib.tools import log_background_job, log_background_job_status, log_tool_call
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -61,6 +61,15 @@ def test_background_job_tem_linha_propria_no_pane(monkeypatch):
 
     assert entry.call_args.args[1:] == ("↻", "job bg123 · Run full suite")
     assert "bg123.output" in "".join(call.args[1] for call in log.call_args_list)
+
+
+def test_background_job_concluido_tem_status_no_pane(monkeypatch):
+    entry = MagicMock()
+    monkeypatch.setattr("lib.tools._entry", entry)
+
+    log_background_job_status({"id": "bg123", "status": "completed"})
+
+    assert entry.call_args.args[1:] == ("✓", "job bg123 · completed")
 
 
 # ── editores que disparam o jump ───────────────────────────────────────────────

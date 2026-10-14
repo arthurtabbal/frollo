@@ -11,7 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner import run_turn, _ensure_proc, _parse_rate_limit_line, _terminate_proc
+from lib.runner import (
+    run_turn, _ensure_proc, _has_running_background_jobs,
+    _parse_rate_limit_line, _terminate_proc,
+)
 from lib.theme import THINKING_FG
 
 
@@ -79,6 +82,13 @@ class TestClaudeNaoEncontrado:
         assert "cwd:" in detail
         assert "PATH:" in detail
         assert "which claude:" in detail
+
+    def test_job_running_suspende_timeout_de_ociosidade(self, fake_client):
+        fake_client._background_jobs = {"bg1": {"status": "running"}}
+        assert _has_running_background_jobs(fake_client) is True
+
+        fake_client._background_jobs["bg1"]["status"] = "completed"
+        assert _has_running_background_jobs(fake_client) is False
 
     def test_eof_exit_zero_sem_result_e_falha_de_protocolo(self, fake_client):
         proc = MagicMock()

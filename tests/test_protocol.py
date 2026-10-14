@@ -71,6 +71,8 @@ def test_event_kinds_cobrem_familias_do_protocolo_atual():
         "context.compaction.finished",
         "file.change.finished",
         "job.started",
+        "job.completed",
+        "job.failed",
         "approval.requested",
         "usage.updated",
         "quota.updated",

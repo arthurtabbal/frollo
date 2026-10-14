@@ -17,7 +17,10 @@ from ..theme import (
     THINKING_FG, THINKING_TS,
     CLEAR,
 )
-from ..tools import log_background_job, log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
+from ..tools import (
+    log_background_job, log_background_job_status, log_tool_call, log_tool_result,
+    TOOLS_LOG, RUNDIR, _log, _ts,
+)
 from ..gargulas import _gargula_comment
 from .. import errors
 
@@ -69,6 +72,29 @@ def _background_job_from_result(event, block, tool_input):
         "output_path": path_match.group(1) if path_match else None,
         "session_id": event.get("session_id"),
         "status": "running",
+    }
+
+
+def _background_job_notification(event):
+    message = event.get("message") or {}
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or "<task-notification>" not in content:
+        return None
+
+    def field(name):
+        match = re.search(rf"<{name}>(.*?)</{name}>", content, re.DOTALL)
+        return match.group(1).strip() if match else None
+
+    job_id = field("task-id")
+    status = field("status")
+    if not job_id or status not in ("completed", "failed"):
+        return None
+    return {
+        "id": job_id,
+        "status": status,
+        "summary": field("summary"),
+        "output_path": field("output-file"),
+        "session_id": event.get("session_id"),
     }
 
 
@@ -630,6 +656,20 @@ class Turn:
                     }, item_id=tool_id, raw=block)
 
     def _handle_user(self, event):
+        notification = _background_job_notification(event)
+        if notification:
+            jobs = getattr(self.client, "_background_jobs", None)
+            if not isinstance(jobs, dict):
+                jobs = {}
+                self.client._background_jobs = jobs
+            job = jobs.setdefault(notification["id"], {"id": notification["id"]})
+            if job.get("status") != notification["status"]:
+                job.update({key: value for key, value in notification.items() if value is not None})
+                log_background_job_status(job)
+                self._emit(
+                    "job.completed" if job["status"] == "completed" else "job.failed",
+                    {"job": dict(job)}, item_id=job["id"], raw=event,
+                )
         for block in _message_blocks(event):
             if block.get("type") == "tool_result":
                 tool_id = block.get("tool_use_id", "")
