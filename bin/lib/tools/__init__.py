@@ -103,3 +103,13 @@ def log_tool_result(block):
     if len(lines) > LIMIT:
         _log(TOOLS_LOG, f"  {DIM}↓ {len(lines) - LIMIT} linhas{RESET}\n")
     _log(TOOLS_LOG, "\n")
+
+
+def log_background_job(job):
+    job_id = job.get("id") or "?"
+    description = job.get("description") or "comando em background"
+    _entry(TOOLS_TODO, "↻", f"job {job_id} · {description}")
+    output_path = job.get("output_path")
+    if output_path:
+        _log(TOOLS_LOG, f"  {DIM}output: {_shorten_path(output_path)}{RESET}\n")
+    _log(TOOLS_LOG, "\n")

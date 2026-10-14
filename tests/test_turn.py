@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner.turn import Turn
+from lib.runner.turn import Turn, _background_job_from_result
 
 
 @pytest.fixture()
@@ -316,6 +316,68 @@ class TestToolUse:
             })
         mock_log_call.assert_called_once()
         assert turn._tool_names["tu1"] == "Bash"
+
+
+class TestBackgroundJobs:
+    def test_extrai_id_e_output_do_resultado_textual(self):
+        block = {
+            "content": (
+                "Command running in background with ID: bbjk1yww9. "
+                "Output is being written to: /tmp/session/tasks/bbjk1yww9.output. "
+                "You will be notified when it completes."
+            ),
+        }
+
+        assert _background_job_from_result(
+            {}, block, {"command": "pytest", "description": "Run tests"},
+        ) == {
+            "id": "bbjk1yww9",
+            "description": "Run tests",
+            "output_path": "/tmp/session/tasks/bbjk1yww9.output",
+            "session_id": None,
+            "status": "running",
+        }
+
+    def test_prefere_id_estruturado_e_aceita_output_ausente(self):
+        event = {"toolUseResult": {"backgroundTaskId": "bg-42"}}
+
+        job = _background_job_from_result(event, {"content": "started"}, {"command": "make"})
+
+        assert job["id"] == "bg-42"
+        assert job["output_path"] is None
+
+    def test_registra_emite_e_exibe_job_uma_vez(self, fake_client):
+        turn = _turn(fake_client)
+        turn._tool_names["tu1"] = "Bash"
+        turn._tool_inputs["tu1"] = {"command": "pytest", "description": "Run tests"}
+        event = {
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result",
+                "tool_use_id": "tu1",
+                "content": "Command running in background with ID: bg123. Output is being written to: /tmp/bg123.output.",
+            }]},
+        }
+
+        with patch("lib.runner.turn.log_tool_result"), \
+             patch("lib.runner.turn.log_background_job") as log_job:
+            turn.handle_event(event)
+            turn.handle_event(event)
+
+        assert fake_client._background_jobs["bg123"]["status"] == "running"
+        assert fake_client._background_jobs["bg123"]["description"] == "Run tests"
+        log_job.assert_called_once()
+        assert [e["kind"] for e in turn.frollo_events].count("job.started") == 1
+
+    def test_result_preenche_session_id_dos_jobs(self, fake_client):
+        turn = _turn(fake_client)
+        fake_client._background_jobs = {
+            "bg123": {"id": "bg123", "session_id": None, "status": "running"},
+        }
+
+        turn.handle_event({"type": "result", "session_id": "sess-123"})
+
+        assert fake_client._background_jobs["bg123"]["session_id"] == "sess-123"
 
 
 class TestToolResultPermissao:

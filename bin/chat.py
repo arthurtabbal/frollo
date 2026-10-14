@@ -197,6 +197,7 @@ class ClaudeClient:
         self._usage_thread = None
         self._codex_usage_thread = None
         self._usage_errors_seen = set()
+        self._background_jobs = {}
 
         RUNDIR.mkdir(exist_ok=True)
         THINKING_LOG.write_text("")

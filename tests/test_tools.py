@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.tools import log_tool_call
+from lib.tools import log_background_job, log_tool_call
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -45,6 +45,22 @@ def _write(fp="/tmp/foo.py"):
 
 def _bash(cmd="ls", desc=""):
     return {"name": "Bash", "input": {"command": cmd, "description": desc}}
+
+
+def test_background_job_tem_linha_propria_no_pane(monkeypatch):
+    entry = MagicMock()
+    log = MagicMock()
+    monkeypatch.setattr("lib.tools._entry", entry)
+    monkeypatch.setattr("lib.tools._log", log)
+
+    log_background_job({
+        "id": "bg123",
+        "description": "Run full suite",
+        "output_path": "/tmp/session/tasks/bg123.output",
+    })
+
+    assert entry.call_args.args[1:] == ("↻", "job bg123 · Run full suite")
+    assert "bg123.output" in "".join(call.args[1] for call in log.call_args_list)
 
 
 # ── editores que disparam o jump ───────────────────────────────────────────────

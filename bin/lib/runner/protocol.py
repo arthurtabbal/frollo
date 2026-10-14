@@ -29,6 +29,7 @@ EVENT_KINDS = frozenset({
     "file.change.started",
     "file.read",
     "file.search",
+    "job.started",
     "message.assistant.completed",
     "message.assistant.delta",
     "message.user",

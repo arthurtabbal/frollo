@@ -17,7 +17,7 @@ from ..theme import (
     THINKING_FG, THINKING_TS,
     CLEAR,
 )
-from ..tools import log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
+from ..tools import log_background_job, log_tool_call, log_tool_result, TOOLS_LOG, RUNDIR, _log, _ts
 from ..gargulas import _gargula_comment
 from .. import errors
 
@@ -44,6 +44,32 @@ def _tool_result_text(content):
             if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
         )
     return str(content or "")
+
+
+def _background_job_from_result(event, block, tool_input):
+    """Extract the job identity exposed by Claude's background Bash result."""
+    metadata = (
+        event.get("toolUseResult")
+        or event.get("tool_use_result")
+        or block.get("toolUseResult")
+        or block.get("tool_use_result")
+        or {}
+    )
+    job_id = metadata.get("backgroundTaskId") or metadata.get("background_task_id")
+    text = _tool_result_text(block.get("content", ""))
+    if not job_id:
+        match = re.search(r"background with ID:\s*([A-Za-z0-9_-]+)", text, re.IGNORECASE)
+        job_id = match.group(1) if match else None
+    if not job_id:
+        return None
+    path_match = re.search(r"Output is being written to:\s*(\S+?\.output)(?:\s|\.|$)", text)
+    return {
+        "id": job_id,
+        "description": tool_input.get("description") or tool_input.get("command") or "Bash",
+        "output_path": path_match.group(1) if path_match else None,
+        "session_id": event.get("session_id"),
+        "status": "running",
+    }
 
 
 def _message_blocks(event):
@@ -637,6 +663,19 @@ class Turn:
                         self._suppress_perm_text = True
                 log_tool_result(block)
                 if tool_name == "Bash":
+                    job = _background_job_from_result(event, block, tool_input)
+                    if job:
+                        jobs = getattr(self.client, "_background_jobs", None)
+                        if not isinstance(jobs, dict):
+                            jobs = {}
+                            self.client._background_jobs = jobs
+                        if job["id"] not in jobs:
+                            job["session_id"] = job["session_id"] or getattr(self.client, "session_id", None)
+                            jobs[job["id"]] = job
+                            log_background_job(job)
+                            self._emit("job.started", {
+                                "job": dict(job),
+                            }, item_id=job["id"], raw=event)
                     exit_match = re.search(r'exit code[:\s]+([1-9]\d*)', result_text, re.IGNORECASE)
                     command_failed = bool(block.get("is_error") or exit_match)
                     self._emit("command.failed" if command_failed else "command.finished", {
@@ -687,6 +726,9 @@ class Turn:
         sid = event.get("session_id")
         if sid:
             self.client.session_id = sid
+            for job in getattr(self.client, "_background_jobs", {}).values():
+                if not job.get("session_id"):
+                    job["session_id"] = sid
         failed = bool(event.get("is_error") or (event.get("subtype") or "success") != "success")
         if event.get("is_error") or (event.get("subtype") or "success") != "success":
             # O CLI encerra o turno com is_error/subtype quando a execução falhou
