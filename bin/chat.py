@@ -91,7 +91,11 @@ from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
 from lib.runner.capabilities import backend_names, backend_profile, supports
 from lib.runner.codex import (
-    load_codex_conversation, pick_codex_session, run_codex_compact, run_codex_turn,
+    list_codex_models, load_codex_conversation, pick_codex_session,
+    refresh_codex_context, run_codex_compact, run_codex_turn,
+)
+from lib.runner.models import (
+    discover_claude_efforts, discover_claude_models, pick_effort, pick_model,
 )
 from lib import config as _config
 from lib import errors
@@ -210,6 +214,75 @@ class ClaudeClient:
 
     def _supports(self, capability):
         return supports(self._backend_profile(), capability)
+
+    def _discover_models(self):
+        try:
+            if self._backend_profile()["label"] == "codex":
+                return list_codex_models(self.cwd)
+            return discover_claude_models(self.cwd)
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
+            errors.report(
+                f"{self._backend_profile()['label']}/models",
+                "não foi possível consultar os modelos disponíveis",
+                code="model_discovery_failed", detail=str(exc), tmux_srv=self.tmux_srv,
+            )
+            return []
+
+    def _discover_efforts(self, models=None, model=None):
+        if self._backend_profile()["label"] == "claude":
+            try:
+                return discover_claude_efforts(self.cwd)
+            except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
+                errors.report(
+                    "claude/models", "não foi possível consultar os efforts disponíveis",
+                    code="effort_discovery_failed", detail=str(exc), tmux_srv=self.tmux_srv,
+                )
+                return []
+        models = models if models is not None else self._discover_models()
+        selected = model or self.model or self.observed_model
+        for item in models:
+            if item["model"] == selected:
+                return item.get("efforts") or []
+        if not selected:
+            default = next((item for item in models if item.get("is_default")), None)
+            if default is not None:
+                return default.get("efforts") or []
+        return []
+
+    def _set_model_and_effort(self):
+        models = self._discover_models()
+        choice = pick_model(
+            models, self._backend_profile()["label"],
+            current=self.model or self.observed_model,
+        )
+        if not choice:
+            return
+        self.model = choice
+        efforts = self._discover_efforts(models=models, model=choice)
+        effort = pick_effort(
+            efforts, self._backend_profile()["label"], current=self.effort,
+        ) if efforts else None
+        if effort:
+            self.effort = effort
+        self._update_model_title()
+        suffix = f" · {self.effort}" if effort else ""
+        sys.stdout.write(
+            f"\n{DIM}modelo → {RESET}{PURPLE}{_short_model(choice) or choice}{RESET}"
+            f"{DIM}{suffix} (próximo turno){RESET}\n"
+        )
+        sys.stdout.flush()
+
+    def _pick_effort(self):
+        efforts = self._discover_efforts()
+        choice = pick_effort(
+            efforts, self._backend_profile()["label"], current=self.effort,
+        )
+        if not choice:
+            return
+        self.effort = choice
+        self._update_model_title()
+        sys.stdout.write(f"\n{DIM}effort → {RESET}{PURPLE}{choice}{RESET}{DIM} (próximo turno){RESET}\n")
+        sys.stdout.flush()
 
     def _stats_tty(self):
         stats_tty_file = RUNDIR / "stats_tty"
@@ -341,8 +414,9 @@ class ClaudeClient:
         if email:
             self._codex_account_email = email
         self._update_stats_title(getattr(self, "_codex_account_email", None))
-        ctx = getattr(self, "_last_codex_ctx", None)
-        if ctx:
+        refreshed_ctx = refresh_codex_context(self)
+        ctx = refreshed_ctx or getattr(self, "_last_codex_ctx", None)
+        if ctx and not refreshed_ctx:
             from lib.runner.codex import _write_codex_ctx_line
             _write_codex_ctx_line(self, ctx.get("used", 0), ctx.get("max", 0))
         self._last_codex_usage = result
@@ -845,11 +919,7 @@ class ClaudeClient:
                         continue
                     parts = user_input.strip().split(maxsplit=1)
                     if len(parts) == 1:
-                        current = self.model or self.observed_model or "default"
-                        shown = _short_model(current) or current
-                        detail = f"  {DIM}({current}){RESET}" if shown != current else ""
-                        sys.stdout.write(f"\n{DIM}modelo atual: {RESET}{shown}{detail}\n")
-                        sys.stdout.flush()
+                        self._set_model_and_effort()
                     else:
                         tokens = parts[1].strip().split()
                         choice = _normalize_model_choice(tokens[0], tokens[1] if len(tokens) > 1 else None)
@@ -870,18 +940,9 @@ class ClaudeClient:
                         continue
                     parts = user_input.strip().split(maxsplit=1)
                     if len(parts) == 1:
-                        current = self.effort or f"default do {self._backend_profile()['label']}"
-                        sys.stdout.write(f"\n{DIM}effort atual: {RESET}{current}\n")
-                        sys.stdout.flush()
+                        self._pick_effort()
                     else:
                         choice = parts[1].strip().lower()
-                        if choice not in EFFORT_LEVELS:
-                            sys.stdout.write(
-                                f"\n{YELLOW}effort inválido: {choice}{RESET}  "
-                                f"{DIM}use {'/'.join(EFFORT_LEVELS)}{RESET}\n"
-                            )
-                            sys.stdout.flush()
-                            continue
                         self.effort = choice
                         self._update_model_title()
                         sys.stdout.write(f"\n{DIM}effort → {RESET}{PURPLE}{choice}{RESET}{DIM} (próximo turno){RESET}\n")
@@ -1000,7 +1061,7 @@ if __name__ == "__main__":
                        help="modelo: alias (opus|sonnet|haiku|fable) ou ID completo")
         p.add_argument("--model-version", metavar="VERSION",
                        help="versão do alias em --model/shortcut (ex: 4.6 vira claude-sonnet-4-6)")
-        p.add_argument("--effort", choices=EFFORT_LEVELS, default=DEFAULT_EFFORT,
+        p.add_argument("--effort", default=DEFAULT_EFFORT,
                        help=f"nível de esforço/reasoning (default: {DEFAULT_EFFORT})")
         p.add_argument("--agent", metavar="NAME",
                        help="agent do Claude Code para a sessão (ex: advisor)")
@@ -1028,6 +1089,8 @@ if __name__ == "__main__":
             if args.agent or args.agent_alias:
                 p.error(f"--backend {args.backend} ainda não suporta seleção de agent")
         if not supports(profile, "model_selection"):
+            model = None
+        elif args.backend == "codex" and not (args.model or args.model_alias):
             model = None
         else:
             model = _normalize_model_choice(args.model or args.model_alias or DEFAULT_MODEL, args.model_version)

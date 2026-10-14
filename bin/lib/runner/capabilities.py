@@ -30,7 +30,7 @@ BACKENDS = {
         "title": "Codex Frollo Observer",
         "required_cli": "codex",
         "capabilities": {
-            "model_selection": False,
+            "model_selection": True,
             "effort_selection": True,
             "agent_selection": False,
             "session_resume": True,

@@ -310,8 +310,8 @@ def _codex_input_items(message, images=None):
     return items
 
 
-def _codex_turn_start_params(thread_id, message, images=None, effort=None):
-    return {
+def _codex_turn_start_params(thread_id, message, images=None, effort=None, model=None):
+    params = {
         "threadId": thread_id,
         "approvalPolicy": "never",
         "sandboxPolicy": {"type": "dangerFullAccess"},
@@ -319,6 +319,9 @@ def _codex_turn_start_params(thread_id, message, images=None, effort=None):
         "summary": _CODEX_REASONING_SUMMARY,
         "input": _codex_input_items(message, images=images),
     }
+    if model:
+        params["model"] = model
+    return params
 
 
 def _codex_thread_boot_request(client):
@@ -329,6 +332,8 @@ def _codex_thread_boot_request(client):
         "approvalPolicy": "never",
         "sandbox": "danger-full-access",
     }
+    if getattr(client, "model", None):
+        common["model"] = client.model
     if resume_id:
         return "thread/resume", {"threadId": resume_id, "excludeTurns": True, **common}
     return "thread/start", common
@@ -369,6 +374,52 @@ def list_codex_sessions(cwd, limit=20):
             preview = thread.get("name") or thread.get("preview") or thread_id
             sessions.append((thread_id, timestamp, str(preview).replace("\n", " ")))
         return sessions
+    finally:
+        proc.stop()
+
+
+def list_codex_models(cwd, timeout=_CODEX_BOOT_TIMEOUT):
+    """Lê todas as páginas do catálogo anunciado pelo app-server."""
+    proc = _CodexProcess(cwd)
+    try:
+        proc.start()
+        init_id = proc.send("initialize", {
+            "clientInfo": {"name": "frollo", "title": "Frollo", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True, "requestAttestation": False},
+        })
+        initialized = proc.wait_for(lambda obj: obj.get("id") == init_id, timeout)
+        if "error" in initialized:
+            raise RuntimeError((initialized.get("error") or {}).get("message") or "initialize falhou")
+        proc.send("initialized", request=False)
+
+        models = []
+        cursor = None
+        while True:
+            request_id = proc.send("model/list", {"cursor": cursor} if cursor else {})
+            response = proc.wait_for(lambda obj: obj.get("id") == request_id, timeout)
+            if "error" in response:
+                raise RuntimeError((response.get("error") or {}).get("message") or "model/list falhou")
+            result = response.get("result") or {}
+            for item in result.get("data") or []:
+                model = item.get("model") or item.get("id")
+                if not model:
+                    continue
+                models.append({
+                    "model": model,
+                    "display_name": item.get("displayName") or model,
+                    "is_default": bool(item.get("isDefault")),
+                    "default_effort": item.get("defaultReasoningEffort"),
+                    "efforts": [
+                        option.get("reasoningEffort")
+                        for option in item.get("supportedReasoningEfforts") or []
+                        if option.get("reasoningEffort")
+                    ],
+                })
+            cursor = result.get("nextCursor")
+            if not cursor:
+                if not models:
+                    raise RuntimeError("model/list respondeu sem modelos")
+                return models
     finally:
         proc.stop()
 
@@ -1401,6 +1452,59 @@ def _write_codex_ctx_line(client, ctx_used, ctx_max):
                 pass
 
 
+def _codex_rollout_path(thread_id):
+    """Resolve the local rollout persisted by Codex for a thread."""
+    if not thread_id:
+        return None
+    codex_root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    sessions = codex_root / "sessions"
+    try:
+        return max(sessions.rglob(f"*{thread_id}.jsonl"), key=lambda path: path.stat().st_mtime)
+    except (OSError, ValueError):
+        return None
+
+
+def _codex_context_from_rollout(thread_id):
+    """Read the most recent context snapshot without starting a model turn."""
+    rollout = _codex_rollout_path(thread_id)
+    if rollout is None:
+        return None
+    try:
+        with rollout.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            stream.seek(max(0, end - 1024 * 1024))
+            tail = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    for line in reversed(tail.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = event.get("payload") or {}
+        if event.get("type") != "event_msg" or payload.get("type") != "token_count":
+            continue
+        info = payload.get("info") or {}
+        last = info.get("last_token_usage") or {}
+        used = last.get("input_tokens")
+        maximum = info.get("model_context_window")
+        if isinstance(used, (int, float)) and isinstance(maximum, (int, float)):
+            return {"used": used, "max": maximum}
+    return None
+
+
+def refresh_codex_context(client):
+    """Refresh and repaint the context line from Codex's persisted snapshot."""
+    snapshot = _codex_context_from_rollout(getattr(client, "_codex_thread_id", None))
+    if not snapshot:
+        return None
+    client._last_codex_ctx = snapshot
+    _write_codex_ctx_line(client, snapshot["used"], snapshot["max"])
+    return snapshot
+
+
 def _codex_quota_from_rate_limits_response(result):
     if not isinstance(result, dict):
         return None
@@ -1649,7 +1753,11 @@ def _run_codex_operation(client, message, images=None, compact=False):
         else:
             proc.send(
                 "turn/start",
-                _codex_turn_start_params(thread_id, message, images=images, effort=getattr(client, "effort", None)),
+                _codex_turn_start_params(
+                    thread_id, message, images=images,
+                    effort=getattr(client, "effort", None),
+                    model=getattr(client, "model", None),
+                ),
             )
 
         saw_idle = False
@@ -1729,6 +1837,7 @@ def _run_codex_operation(client, message, images=None, compact=False):
         elapsed = time.time() - renderer.start_time
         if compact:
             if adapter.compaction_done and renderer.turn_status not in ("failed", "error", "interrupted"):
+                refresh_codex_context(client)
                 sys.stdout.write(f"\n{DIM}contexto compactado{RESET}\n")
                 sys.stdout.flush()
             else:

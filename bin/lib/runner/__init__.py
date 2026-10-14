@@ -370,6 +370,31 @@ def run_turn(client, message, images=None):
         # Seu `result` traz uso zerado e, se passasse pelo bloco abaixo, apagaria a
         # barra de contexto e criaria uma linha de stats fictícia.
         if turn.local_command == "compact":
+            metadata = turn.compaction_metadata
+            post_tokens = metadata.get("postTokens", metadata.get("post_tokens"))
+            if turn.compaction_result == "success" and isinstance(post_tokens, (int, float)):
+                _stats_tty_file = RUNDIR / "stats_tty"
+                _stats_tty = _stats_tty_file.read_text().strip() if _stats_tty_file.exists() else ""
+                _ctx_max = _model_ctx_window(turn.model_name or getattr(client, "observed_model", ""))
+                if _stats_tty:
+                    try:
+                        _fd2 = os.open(_stats_tty, os.O_WRONLY | os.O_NOCTTY)
+                        os.write(
+                            _fd2,
+                            _without_autowrap(
+                                "\033[3;1H" + _render_ctx_line(post_tokens, _ctx_max)
+                            ).encode(),
+                        )
+                        os.close(_fd2)
+                    except OSError:
+                        pass
+                try:
+                    _sess_file = config.CONFIG_PATH.parent / "last_session.json"
+                    session = json.loads(_sess_file.read_text()) if _sess_file.exists() else {}
+                    session.update({"ctx_tokens": post_tokens, "ctx_max": _ctx_max})
+                    _sess_file.write_text(json.dumps(session))
+                except (OSError, json.JSONDecodeError):
+                    pass
             if not persistent:
                 proc.wait()
             client._last_turn_completed = turn.turn_done

@@ -13,6 +13,7 @@ from lib.runner.codex import (
     _codex_account_email_from_response,
     _codex_command_output_preview,
     _codex_context_used,
+    _codex_context_from_rollout,
     _codex_live_progress_line,
     _codex_live_progress_lines,
     _codex_normalize_command_output,
@@ -24,6 +25,7 @@ from lib.runner.codex import (
     _codex_thread_boot_request,
     load_codex_conversation,
     _write_stats,
+    refresh_codex_context,
 )
 from lib.runner.protocol import SCHEMA
 from lib.theme import CHAT_FG, RESET
@@ -37,6 +39,31 @@ def _adapter():
 
 
 class TestCodexAdapter:
+    def test_le_contexto_mais_recente_do_rollout(self, tmp_path, monkeypatch):
+        sessions = tmp_path / "sessions" / "2026" / "10" / "13"
+        sessions.mkdir(parents=True)
+        rollout = sessions / "rollout-2026-thread-1.jsonl"
+        rollout.write_text("\n".join([
+            '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":57400},"model_context_window":200000}}}',
+            '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12100},"model_context_window":200000}}}',
+        ]))
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+        assert _codex_context_from_rollout("thread-1") == {"used": 12100, "max": 200000}
+
+    def test_refresh_de_contexto_repinta_e_atualiza_cache(self, monkeypatch):
+        client = MagicMock(_codex_thread_id="thread-1")
+        monkeypatch.setattr(
+            codex_mod, "_codex_context_from_rollout",
+            lambda thread_id: {"used": 12000, "max": 200000},
+        )
+        write = MagicMock()
+        monkeypatch.setattr(codex_mod, "_write_codex_ctx_line", write)
+
+        assert refresh_codex_context(client) == {"used": 12000, "max": 200000}
+        assert client._last_codex_ctx == {"used": 12000, "max": 200000}
+        write.assert_called_once_with(client, 12000, 200000)
+
     def test_boot_cria_thread_sem_resume(self):
         client = MagicMock(cwd="/repo", resume_id=None, first_turn=True)
 
@@ -53,6 +80,18 @@ class TestCodexAdapter:
         assert method == "thread/resume"
         assert params["threadId"] == "thread-1"
         assert params["excludeTurns"] is True
+
+    def test_boot_passa_modelo_mas_effort_fica_para_turn_start(self):
+        client = MagicMock(
+            cwd="/repo", resume_id=None, first_turn=True,
+            model="gpt-6.1-sol", effort="max",
+        )
+
+        method, params = _codex_thread_boot_request(client)
+
+        assert method == "thread/start"
+        assert params["model"] == "gpt-6.1-sol"
+        assert "effort" not in params
 
     def test_normaliza_historico_hidratado_em_falas_visiveis(self):
         thread = {"turns": [
@@ -176,6 +215,11 @@ class TestCodexAdapter:
         params = _codex_turn_start_params("thread-1", "oi", effort="max")
 
         assert params["effort"] == "max"
+
+    def test_turn_start_params_aceitam_modelo_do_cliente(self):
+        params = _codex_turn_start_params("thread-1", "oi", model="gpt-6.1-codex")
+
+        assert params["model"] == "gpt-6.1-codex"
 
     def test_quota_codex_formata_reset_epoch_sem_printar_inteiro_cru(self):
         rendered = _codex_quota_for_stats({"used_percent": 2, "resets_at": 1785281318})

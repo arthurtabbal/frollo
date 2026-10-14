@@ -183,7 +183,7 @@ class TestBackendCapabilities:
 
     def test_codex_declara_limites_atuais(self):
         profile = backend_profile("codex")
-        assert not supports(profile, "model_selection")
+        assert supports(profile, "model_selection")
         assert supports(profile, "effort_selection")
         assert not supports(profile, "agent_selection")
         assert supports(profile, "session_resume")
@@ -278,6 +278,19 @@ class TestCompactCommand:
 
 
 class TestUsageRefresh:
+    def test_poll_codex_atualiza_contexto_antes_de_repintar_cota(self, client):
+        client.backend_profile = backend_profile("codex")
+        client._usage_errors_seen = set()
+        client._update_stats_title = MagicMock()
+        client._write_quota_line = MagicMock()
+        with patch("chat.refresh_codex_context", return_value={"used": 12000, "max": 200000}) as refresh, \
+             patch("lib.runner.codex.fetch_codex_usage", return_value={
+                 "limits": [{"label": "codex", "pct": 2}],
+             }):
+            client._fetch_codex_usage_once()
+
+        refresh.assert_called_once_with(client)
+
     def test_intervalo_default_de_cota_e_conservador(self, monkeypatch):
         monkeypatch.delenv("FROLLO_USAGE_REFRESH_SECONDS", raising=False)
 

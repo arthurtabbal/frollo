@@ -120,8 +120,8 @@ The full layout opens a tmux session:
 | `/compact [instructions]` | Compact the current context (instructions are supported by Claude; Codex accepts `/compact` without arguments) |
 | `/refresh` | Restart, resuming the current session |
 | `/new` | Restart with a fresh context |
-| `/model [name] [version]` | Show or switch model (`opus`/`sonnet`/`haiku`/`fable`, optional version, or full ID) |
-| `/effort [level]` | Show or switch effort (`low`/`medium`/`high`/`xhigh`/`max`) |
+| `/model [name] [version]` | Without arguments, fetch the backend's current catalog and pick model + effort; with arguments, switch by alias or full ID |
+| `/effort [level]` | Without arguments, fetch and pick a supported effort; with an argument, set it directly |
 | `/agent [name]` / `/advisor` | Show or switch Claude Code agent; `/advisor` selects `advisor` |
 | `Shift+Tab` | Toggle Normal ↔ Auto mode |
 | `Alt+Enter` | Insert newline (multiline input) |
