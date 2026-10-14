@@ -27,6 +27,7 @@ from .assistant_text import AssistantTextRenderer
 from .panes import _window_height, _resize_thinking, THINKING_LOG
 from .permissions import _raw_stdin
 from .protocol import make_event
+from .permissions import ask_user_questions, normalize_user_questions
 from .render import RenderQueue
 from ..session import _visible_user_text, pick_session_entries
 from .stats import (
@@ -337,6 +338,16 @@ def _codex_thread_boot_request(client):
     if resume_id:
         return "thread/resume", {"threadId": resume_id, "excludeTurns": True, **common}
     return "thread/start", common
+
+
+def _codex_question_response(answers):
+    """Monta o resultado exato esperado por item/tool/requestUserInput."""
+    return {
+        "answers": {
+            question_id: {"answers": values}
+            for question_id, values in (answers or {}).items()
+        }
+    }
 
 
 def list_codex_sessions(cwd, limit=20):
@@ -787,6 +798,15 @@ class _CodexAdapter:
                     "available_decisions": params.get("availableDecisions"),
                 },
                 "command": {"command": params.get("command"), "cwd": params.get("cwd")},
+            }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
+        elif method == "item/tool/requestUserInput":
+            questions = normalize_user_questions({"questions": params.get("questions") or []})
+            out.append(self.event("question.requested", {
+                "status": "in_progress",
+                "request_id": msg.get("id"),
+                "questions": questions,
+                "blocking": params.get("isBlocking", True),
+                "tool": "request_user_input",
             }, turn_id=params.get("turnId"), item_id=params.get("itemId"), raw=msg))
         elif method == "serverRequest/resolved":
             request_id = params.get("requestId")
@@ -1315,6 +1335,12 @@ class _CodexRenderer:
                 return self._ask_approval(payload)
             finally:
                 self.render.resume()
+        elif kind == "question.requested":
+            self.render.suspend()
+            try:
+                return ask_user_questions("request_user_input", payload.get("questions") or [])
+            finally:
+                self.render.resume()
         elif kind in ("turn.finished", "turn.failed", "turn.interrupted"):
             self.assistant_text.finish(add_newline_if_mid_line=True)
             self.turn_done = True
@@ -1818,6 +1844,20 @@ def _run_codex_operation(client, message, images=None, compact=False):
                     }, turn_id=event["turn_id"], item_id=event["item_id"],
                        raw={"client_response": {"id": request_id, "result": {"decision": decision}}})
                     renderer.handle(resolved)
+                if event["kind"] == "question.requested":
+                    request_id = event["payload"]["request_id"]
+                    answers = decision or {}
+                    proc.respond(request_id, _codex_question_response(answers))
+                    renderer.handle(adapter.event(
+                        "question.answered" if decision is not None else "question.cancelled",
+                        {
+                            "status": "completed" if decision is not None else "cancelled",
+                            "request_id": request_id,
+                            "answers": answers,
+                        },
+                        turn_id=event["turn_id"], item_id=event["item_id"],
+                        raw={"client_response": {"id": request_id}},
+                    ))
             if msg.get("method") == "thread/status/changed":
                 saw_idle = (msg.get("params") or {}).get("status", {}).get("type") == "idle"
 

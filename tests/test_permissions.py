@@ -100,3 +100,15 @@ class TestStructuredQuestions:
         monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
         monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("\n"))
         assert _handle_user_question("AskUserQuestion", {"question": "Continuar?"}) is None
+
+    def test_texto_livre_preserva_virgulas(self, monkeypatch):
+        import io
+        from lib.runner.permissions import ask_user_questions
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("sim, mas depois\n"))
+        answers = ask_user_questions("request_user_input", normalize_user_questions({
+            "questions": [{"id": "detail", "question": "Algum detalhe?"}],
+        }))
+
+        assert answers == {"detail": ["sim, mas depois"]}

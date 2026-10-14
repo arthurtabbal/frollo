@@ -23,6 +23,7 @@ from lib.runner.codex import (
     _codex_history_messages,
     _codex_turn_start_params,
     _codex_thread_boot_request,
+    _codex_question_response,
     load_codex_conversation,
     _write_stats,
     refresh_codex_context,
@@ -36,6 +37,13 @@ def _adapter():
     client.session_id = None
     client.observed_model = ""
     return _CodexAdapter(client)
+
+
+def test_codex_question_response_preserva_ids_e_lista_de_respostas():
+    assert _codex_question_response({"strategy": ["Incremental"]}) == {
+        "answers": {"strategy": {"answers": ["Incremental"]}},
+    }
+    assert _codex_question_response(None) == {"answers": {}}
 
 
 class TestCodexAdapter:
@@ -368,6 +376,34 @@ class TestCodexAdapter:
             "params": {"threadId": "thread-1", "requestId": 0},
         })
         assert events == []
+
+    def test_mapeia_request_user_input_estruturado(self):
+        adapter = _adapter()
+        events = adapter.normalize({
+            "method": "item/tool/requestUserInput",
+            "id": 42,
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "question-1",
+                "isBlocking": True,
+                "questions": [{
+                    "id": "strategy",
+                    "header": "Estratégia",
+                    "question": "Como seguimos?",
+                    "options": [
+                        {"label": "Incremental", "description": "por etapas"},
+                        {"label": "Completa", "description": "de uma vez"},
+                    ],
+                }],
+            },
+        })
+
+        assert len(events) == 1
+        assert events[0]["kind"] == "question.requested"
+        assert events[0]["payload"]["request_id"] == 42
+        assert events[0]["payload"]["questions"][0]["id"] == "strategy"
+        assert events[0]["payload"]["questions"][0]["options"][0]["label"] == "Incremental"
 
     def test_mapeia_warning_sandbox_codex_com_codigo_suprimivel(self):
         adapter = _adapter()

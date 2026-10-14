@@ -163,15 +163,10 @@ def _read_question_answer(question):
         sys.stdout.write(f"{DIM}Escolha entre 1 e {len(options)}.{RESET}\n")
 
 
-def _handle_user_question(tool_name, inp=None, result_text=""):
-    """Fallback para ferramentas de pergunta que o CLI não suporta em --print.
-
-    O Frollo não executa a tool no lugar do Claude CLI; coleta a resposta humana
-    e devolve como contexto de retry no próximo turno.
-    """
-    questions = normalize_user_questions(inp or {}, result_text)
+def ask_user_questions(tool_name, questions):
+    """Renderiza perguntas normalizadas e devolve respostas por id."""
     sys.stdout.write(f"\n{BG_USER}{WHITE}  pergunta  {RESET}  {YELLOW}{tool_name or 'AskUser'}{RESET}\n")
-    answers = []
+    answers = {}
     with _cooked_stdin():
         for question in questions:
             if question["header"]:
@@ -182,12 +177,31 @@ def _handle_user_question(tool_name, inp=None, result_text=""):
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 return None
-            answers.append((question["question"], answer))
+            answers[question["id"]] = (
+                [part.strip() for part in answer.split(",")]
+                if question["multiple"] else [answer]
+            )
     sys.stdout.write("\n")
     sys.stdout.flush()
+    return answers
+
+
+def _handle_user_question(tool_name, inp=None, result_text=""):
+    """Fallback para ferramentas de pergunta que o CLI não suporta em --print.
+
+    O Frollo não executa a tool no lugar do Claude CLI; coleta a resposta humana
+    e devolve como contexto de retry no próximo turno.
+    """
+    questions = normalize_user_questions(inp or {}, result_text)
+    answers = ask_user_questions(tool_name, questions)
+    if answers is None:
+        return None
     if len(answers) == 1:
-        return answers[0][1]
-    return "\n\n".join(f"{question}\n{answer}" for question, answer in answers)
+        return ", ".join(next(iter(answers.values())))
+    return "\n\n".join(
+        f"{question['question']}\n{', '.join(answers[question['id']])}"
+        for question in questions
+    )
 
 
 def _handle_control_request(event, proc, cwd):
