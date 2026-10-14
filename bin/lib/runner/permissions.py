@@ -81,7 +81,7 @@ def _write_stdin(proc, data):
         return False
 
 
-def _question_from_input(inp, fallback=""):
+def _question_text(inp, fallback=""):
     if isinstance(inp, dict):
         for key in ("question", "prompt", "message", "text"):
             value = inp.get(key)
@@ -97,23 +97,97 @@ def _question_from_input(inp, fallback=""):
     return "O agente pediu uma resposta."
 
 
+def normalize_user_questions(inp, fallback=""):
+    """Converte shapes conhecidos de AskUserQuestion em perguntas neutras.
+
+    O contrato é deliberadamente pequeno para servir também a outros backends:
+    texto, cabeçalho opcional, opções e seleção simples/múltipla.
+    """
+    source = inp if isinstance(inp, dict) else {}
+    raw_questions = source.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raw_questions = [source]
+
+    questions = []
+    for index, raw in enumerate(raw_questions, 1):
+        raw = raw if isinstance(raw, dict) else {"question": str(raw)}
+        options = []
+        for option in raw.get("options", []) if isinstance(raw.get("options"), list) else []:
+            if isinstance(option, str) and option.strip():
+                options.append({"label": option.strip(), "description": ""})
+            elif isinstance(option, dict):
+                label = option.get("label") or option.get("value") or option.get("name")
+                if isinstance(label, str) and label.strip():
+                    description = option.get("description")
+                    options.append({
+                        "label": label.strip(),
+                        "description": description.strip() if isinstance(description, str) else "",
+                    })
+        questions.append({
+            "id": str(raw.get("id") or raw.get("header") or f"question-{index}"),
+            "header": str(raw.get("header") or "").strip(),
+            "question": _question_text(raw, fallback if index == 1 else ""),
+            "options": options,
+            "multiple": bool(raw.get("multiSelect") or raw.get("multiple")),
+        })
+    return questions
+
+
+def _read_question_answer(question):
+    options = question["options"]
+    if not options:
+        sys.stdout.write(f"{DIM}> {RESET}")
+        sys.stdout.flush()
+        return sys.stdin.readline().rstrip("\n") or None
+
+    for index, option in enumerate(options, 1):
+        detail = f" — {option['description']}" if option["description"] else ""
+        sys.stdout.write(f"  {YELLOW}{index}.{RESET} {option['label']}{DIM}{detail}{RESET}\n")
+    hint = "números separados por vírgula" if question["multiple"] else "número"
+    while True:
+        sys.stdout.write(f"{DIM}> {hint} (vazio cancela): {RESET}")
+        sys.stdout.flush()
+        raw = sys.stdin.readline().strip()
+        if not raw:
+            return None
+        parts = [part.strip() for part in raw.split(",")]
+        if not question["multiple"] and len(parts) != 1:
+            sys.stdout.write(f"{DIM}Escolha apenas uma opção.{RESET}\n")
+            continue
+        try:
+            indexes = [int(part) for part in parts]
+        except ValueError:
+            indexes = []
+        if indexes and len(set(indexes)) == len(indexes) and all(1 <= item <= len(options) for item in indexes):
+            return ", ".join(options[item - 1]["label"] for item in indexes)
+        sys.stdout.write(f"{DIM}Escolha entre 1 e {len(options)}.{RESET}\n")
+
+
 def _handle_user_question(tool_name, inp=None, result_text=""):
     """Fallback para ferramentas de pergunta que o CLI não suporta em --print.
 
     O Frollo não executa a tool no lugar do Claude CLI; coleta a resposta humana
     e devolve como contexto de retry no próximo turno.
     """
-    question = _question_from_input(inp or {}, result_text)
+    questions = normalize_user_questions(inp or {}, result_text)
     sys.stdout.write(f"\n{BG_USER}{WHITE}  pergunta  {RESET}  {YELLOW}{tool_name or 'AskUser'}{RESET}\n")
-    sys.stdout.write(f"{question}\n")
-    sys.stdout.write(f"{DIM}> {RESET}")
-    sys.stdout.flush()
+    answers = []
     with _cooked_stdin():
-        answer = sys.stdin.readline()
-    answer = answer.rstrip("\n")
+        for question in questions:
+            if question["header"]:
+                sys.stdout.write(f"{DIM}{question['header']}{RESET}\n")
+            sys.stdout.write(f"{question['question']}\n")
+            answer = _read_question_answer(question)
+            if answer is None:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return None
+            answers.append((question["question"], answer))
     sys.stdout.write("\n")
     sys.stdout.flush()
-    return answer
+    if len(answers) == 1:
+        return answers[0][1]
+    return "\n\n".join(f"{question}\n{answer}" for question, answer in answers)
 
 
 def _handle_control_request(event, proc, cwd):

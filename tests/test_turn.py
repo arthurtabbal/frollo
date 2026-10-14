@@ -487,6 +487,34 @@ class TestToolResultPerguntaUsuario:
         assert turn.retry_requested is True
         assert "o caminho curto" in fake_client._retry_context
         assert turn._suppress_perm_text is True
+        question_events = [event for event in turn.frollo_events if event["kind"].startswith("question.")]
+        assert [event["kind"] for event in question_events] == [
+            "question.requested", "question.answered",
+        ]
+        assert question_events[0]["payload"]["questions"][0]["question"] == "Qual caminho prefere?"
+        assert question_events[1]["payload"]["answer"] == "o caminho curto"
+
+    def test_cancelamento_emite_evento_sem_pedir_retry(self, fake_client):
+        turn = _turn(fake_client)
+        turn._tool_names["tu1"] = "AskUserQuestion"
+        turn._tool_inputs["tu1"] = {"question": "Continuar?", "options": ["Sim", "Não"]}
+        with patch("lib.runner.turn.log_tool_result"), \
+             patch("lib.runner.turn._handle_user_question", return_value=None):
+            turn.handle_event({
+                "type": "user",
+                "message": {"content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "is_error": True,
+                    "content": [{"type": "text", "text": "not available in this environment"}],
+                }]},
+            })
+
+        assert turn.retry_requested is False
+        assert fake_client._retry_context is None
+        assert [event["kind"] for event in turn.frollo_events if event["kind"].startswith("question.")] == [
+            "question.requested", "question.cancelled",
+        ]
 
     def test_task_prompt_com_erro_nao_e_confundido_com_pergunta(self, fake_client):
         turn = _turn(fake_client)

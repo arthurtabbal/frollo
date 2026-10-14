@@ -31,6 +31,7 @@ from .permissions import (
     _handle_permission_ask,
     _handle_control_request,
     _handle_user_question,
+    normalize_user_questions,
     _write_stdin,
 )
 from .protocol import make_event
@@ -690,16 +691,35 @@ class Turn:
                             self.render.resume()
                         self._suppress_perm_text = True
                     elif _looks_like_user_question_tool(tool_name, tool_input, err_text):
+                        questions = normalize_user_questions(tool_input, err_text)
+                        self._emit("question.requested", {
+                            "status": "in_progress",
+                            "questions": questions,
+                            "tool": tool_name,
+                        }, item_id=tool_id, raw=block)
                         self.render.suspend()
                         try:
                             answer = _handle_user_question(tool_name, tool_input, err_text)
                         finally:
                             self.render.resume()
-                        self.retry_requested = True
-                        self.client._retry_context = (
-                            "Resposta do usuário à sua pergunta anterior:\n\n"
-                            f"{answer if answer else '(sem resposta textual)'}"
-                        )
+                        if answer is None:
+                            self._emit("question.cancelled", {
+                                "status": "cancelled",
+                                "questions": questions,
+                                "tool": tool_name,
+                            }, item_id=tool_id, raw=block)
+                        else:
+                            self._emit("question.answered", {
+                                "status": "completed",
+                                "questions": questions,
+                                "answer": answer,
+                                "tool": tool_name,
+                            }, item_id=tool_id, raw=block)
+                            self.retry_requested = True
+                            self.client._retry_context = (
+                                "Resposta do usuário à sua pergunta anterior:\n\n"
+                                f"{answer}"
+                            )
                         self._suppress_perm_text = True
                 log_tool_result(block)
                 if tool_name == "Bash":

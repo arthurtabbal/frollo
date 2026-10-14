@@ -76,5 +76,8 @@ def test_event_kinds_cobrem_familias_do_protocolo_atual():
         "approval.requested",
         "usage.updated",
         "quota.updated",
+        "question.requested",
+        "question.answered",
+        "question.cancelled",
         "error",
     } <= EVENT_KINDS

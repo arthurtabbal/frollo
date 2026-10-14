@@ -8,7 +8,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
-from lib.runner.permissions import _write_stdin, _handle_control_request
+from lib.runner.permissions import (
+    _handle_control_request,
+    _handle_user_question,
+    _write_stdin,
+    normalize_user_questions,
+)
 
 
 class TestWriteStdin:
@@ -51,3 +56,47 @@ class TestHandleControlRequestStdinFechado:
 @contextlib.contextmanager
 def _fake_raw_stdin():
     yield
+
+
+class TestStructuredQuestions:
+    def test_normaliza_schema_do_ask_user_question(self):
+        questions = normalize_user_questions({"questions": [{
+            "header": "Estratégia",
+            "question": "Como seguimos?",
+            "options": [
+                {"label": "Incremental", "description": "entrega por etapas"},
+                {"label": "Completa", "description": "faz tudo agora"},
+            ],
+            "multiSelect": False,
+        }]})
+
+        assert questions == [{
+            "id": "Estratégia",
+            "header": "Estratégia",
+            "question": "Como seguimos?",
+            "options": [
+                {"label": "Incremental", "description": "entrega por etapas"},
+                {"label": "Completa", "description": "faz tudo agora"},
+            ],
+            "multiple": False,
+        }]
+
+    def test_picker_retorna_rotulos_de_selecao_multipla(self, monkeypatch):
+        import io
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("1,3\n"))
+        answer = _handle_user_question("AskUserQuestion", {"questions": [{
+            "question": "Quais entram?",
+            "options": ["A", "B", "C"],
+            "multiSelect": True,
+        }]})
+
+        assert answer == "A, C"
+
+    def test_picker_vazio_cancela(self, monkeypatch):
+        import io
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("\n"))
+        assert _handle_user_question("AskUserQuestion", {"question": "Continuar?"}) is None
