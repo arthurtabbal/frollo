@@ -123,6 +123,7 @@ The full layout opens a tmux session:
 | `/model [name] [version]` | Without arguments, fetch the backend's current catalog and pick model + effort; with arguments, switch by alias or full ID |
 | `/effort [level]` | Without arguments, fetch and pick a supported effort; with an argument, set it directly |
 | `/agent [name]` / `/advisor` | Show or switch Claude Code agent; `/advisor` selects `advisor` |
+| `/jobs [notify|prompt|auto]` | Show background jobs and continuation policy; with an argument, persist the policy |
 | `Shift+Tab` | Toggle Normal ↔ Auto mode |
 | `Alt+Enter` | Insert newline (multiline input) |
 | `Ctrl+V` | Paste an image from the clipboard |

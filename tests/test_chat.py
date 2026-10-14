@@ -59,6 +59,59 @@ class TestPasteEditorAusente:
         assert "meu-editor-magico" in out
 
 
+class TestBackgroundContinuation:
+    def test_auto_inicia_continuacao_antes_do_proximo_prompt(self, client):
+        client.supervisor = MagicMock()
+        client.supervisor.next_continuation.return_value = {
+            "job": {"id": "bg1"},
+            "policy": "auto",
+            "instruction": "continue bg1",
+        }
+        client._run_turn = MagicMock()
+
+        assert client._handle_pending_continuation() is True
+        client._run_turn.assert_called_once_with("continue bg1")
+
+    def test_prompt_negado_nao_inicia_turno(self, client, monkeypatch):
+        client.supervisor = MagicMock()
+        client.supervisor.next_continuation.return_value = {
+            "job": {"id": "bg1"},
+            "policy": "prompt",
+            "instruction": "continue bg1",
+        }
+        client._run_turn = MagicMock()
+        monkeypatch.setattr("builtins.input", lambda: "n")
+
+        assert client._handle_pending_continuation() is False
+        client._run_turn.assert_not_called()
+
+    def test_prompt_aceito_inicia_turno(self, client, monkeypatch):
+        client.supervisor = MagicMock()
+        client.supervisor.next_continuation.return_value = {
+            "job": {"id": "bg1"},
+            "policy": "prompt",
+            "instruction": "continue bg1",
+        }
+        client._run_turn = MagicMock()
+        monkeypatch.setattr("builtins.input", lambda: "s")
+
+        assert client._handle_pending_continuation() is True
+        client._run_turn.assert_called_once_with("continue bg1")
+
+    def test_notify_apenas_informa(self, client, capsys):
+        client.supervisor = MagicMock()
+        client.supervisor.next_continuation.return_value = {
+            "job": {"id": "bg1"},
+            "policy": "notify",
+            "instruction": "continue bg1",
+        }
+        client._run_turn = MagicMock()
+
+        assert client._handle_pending_continuation() is False
+        assert "bg1" in capsys.readouterr().out
+        client._run_turn.assert_not_called()
+
+
 class TestResumeArgv:
     def test_remove_resume_sem_id_sem_engolir_backend(self):
         assert _argv_without_resume(["chat.py", "--resume", "--backend", "codex"]) == [

@@ -22,12 +22,14 @@ from pathlib import Path
 from .. import config
 from .. import errors
 from ..theme import CLEAR, DIM, RESET, THINKING_FG, THINKING_TS, YELLOW
-from ..tools import RUNDIR, TOOLS_LOG, _log, _ts, log_tool_call, log_tool_result
+from ..tools import (
+    RUNDIR, TOOLS_LOG, _log, _ts, log_background_job,
+    log_background_job_status, log_tool_call, log_tool_result,
+)
 from .assistant_text import AssistantTextRenderer
 from .panes import _window_height, _resize_thinking, THINKING_LOG
-from .permissions import _raw_stdin
+from .permissions import _raw_stdin, ask_user_questions, normalize_user_questions
 from .protocol import make_event
-from .permissions import ask_user_questions, normalize_user_questions
 from .render import RenderQueue
 from ..session import _visible_user_text, pick_session_entries
 from .stats import (
@@ -1256,6 +1258,33 @@ class _CodexRenderer:
                 log_tool_result({"content": text})
             if kind == "command.failed" and not text:
                 _log(TOOLS_LOG, f"  {YELLOW}{payload.get('status', 'failed')}{RESET}\n\n")
+        elif kind == "job.started":
+            job = payload.get("job") or {}
+            supervisor = vars(self.client).get("supervisor")
+            if supervisor is not None:
+                job, created = supervisor.register_job(job)
+            else:
+                created = True
+            if created:
+                log_background_job(job)
+        elif kind in ("job.completed", "job.failed", "job.cancelled"):
+            update = payload.get("job") or {}
+            supervisor = vars(self.client).get("supervisor")
+            if supervisor is not None:
+                job, changed = supervisor.finish_job(update)
+            else:
+                job, changed = update, True
+            if changed:
+                log_background_job_status(job)
+                self.render.join()
+                self.clear_status()
+                icon = "✓" if job.get("status") == "completed" else (
+                    "×" if job.get("status") == "cancelled" else "!"
+                )
+                sys.stdout.write(
+                    f"\n{YELLOW}{icon} job {job.get('id')} {job.get('status')}{RESET}\n"
+                )
+                sys.stdout.flush()
         elif kind == "file.change.finished":
             file_payload = payload.get("file") or {}
             path = file_payload.get("path") or ""

@@ -88,7 +88,9 @@ def _background_job_notification(event):
 
     job_id = field("task-id")
     status = field("status")
-    if not job_id or status not in ("completed", "failed"):
+    if status in ("canceled", "cancelled", "killed", "stopped"):
+        status = "cancelled"
+    if not job_id or status not in ("completed", "failed", "cancelled"):
         return None
     return {
         "id": job_id,
@@ -659,16 +661,32 @@ class Turn:
     def _handle_user(self, event):
         notification = _background_job_notification(event)
         if notification:
-            jobs = getattr(self.client, "_background_jobs", None)
-            if not isinstance(jobs, dict):
-                jobs = {}
-                self.client._background_jobs = jobs
-            job = jobs.setdefault(notification["id"], {"id": notification["id"]})
-            if job.get("status") != notification["status"]:
+            supervisor = vars(self.client).get("supervisor")
+            if supervisor is not None:
+                job, changed = supervisor.finish_job(notification)
+            else:
+                jobs = getattr(self.client, "_background_jobs", None)
+                if not isinstance(jobs, dict):
+                    jobs = {}
+                    self.client._background_jobs = jobs
+                job = jobs.setdefault(notification["id"], {"id": notification["id"]})
+                changed = job.get("status") != notification["status"]
                 job.update({key: value for key, value in notification.items() if value is not None})
+            if changed:
                 log_background_job_status(job)
+                self.render.join()
+                self._clear_status()
+                icon = "✓" if job["status"] == "completed" else ("×" if job["status"] == "cancelled" else "!")
+                sys.stdout.write(
+                    f"\n{YELLOW}{icon} job {job['id']} {job['status']}{RESET}"
+                    f"{DIM}{' — ' + job['summary'] if job.get('summary') else ''}{RESET}\n"
+                )
+                sys.stdout.flush()
                 self._emit(
-                    "job.completed" if job["status"] == "completed" else "job.failed",
+                    {
+                        "completed": "job.completed",
+                        "cancelled": "job.cancelled",
+                    }.get(job["status"], "job.failed"),
                     {"job": dict(job)}, item_id=job["id"], raw=event,
                 )
         for block in _message_blocks(event):
@@ -725,13 +743,19 @@ class Turn:
                 if tool_name == "Bash":
                     job = _background_job_from_result(event, block, tool_input)
                     if job:
-                        jobs = getattr(self.client, "_background_jobs", None)
-                        if not isinstance(jobs, dict):
-                            jobs = {}
-                            self.client._background_jobs = jobs
-                        if job["id"] not in jobs:
-                            job["session_id"] = job["session_id"] or getattr(self.client, "session_id", None)
-                            jobs[job["id"]] = job
+                        job["session_id"] = job["session_id"] or getattr(self.client, "session_id", None)
+                        supervisor = vars(self.client).get("supervisor")
+                        if supervisor is not None:
+                            job, created = supervisor.register_job(job)
+                        else:
+                            jobs = getattr(self.client, "_background_jobs", None)
+                            if not isinstance(jobs, dict):
+                                jobs = {}
+                                self.client._background_jobs = jobs
+                            created = job["id"] not in jobs
+                            if created:
+                                jobs[job["id"]] = job
+                        if created:
                             log_background_job(job)
                             self._emit("job.started", {
                                 "job": dict(job),
@@ -789,6 +813,9 @@ class Turn:
             for job in getattr(self.client, "_background_jobs", {}).values():
                 if not job.get("session_id"):
                     job["session_id"] = sid
+            supervisor = vars(self.client).get("supervisor")
+            if supervisor is not None:
+                supervisor.attach_session(sid)
         failed = bool(event.get("is_error") or (event.get("subtype") or "success") != "success")
         if event.get("is_error") or (event.get("subtype") or "success") != "success":
             # O CLI encerra o turno com is_error/subtype quando a execução falhou

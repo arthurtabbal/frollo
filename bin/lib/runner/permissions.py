@@ -1,4 +1,5 @@
 import contextlib
+import getpass
 import json
 import os
 import sys
@@ -129,6 +130,8 @@ def normalize_user_questions(inp, fallback=""):
             "question": _question_text(raw, fallback if index == 1 else ""),
             "options": options,
             "multiple": bool(raw.get("multiSelect") or raw.get("multiple")),
+            "secret": bool(raw.get("isSecret") or raw.get("secret")),
+            "allow_other": bool(raw.get("isOther") or raw.get("allowOther")),
         })
     return questions
 
@@ -136,11 +139,18 @@ def normalize_user_questions(inp, fallback=""):
 def _read_question_answer(question):
     options = question["options"]
     if not options:
+        if question.get("secret"):
+            answer = getpass.getpass(prompt=f"{DIM}> {RESET}")
+            return [answer] if answer else None
         sys.stdout.write(f"{DIM}> {RESET}")
         sys.stdout.flush()
-        return sys.stdin.readline().rstrip("\n") or None
+        answer = sys.stdin.readline().rstrip("\n")
+        return [answer] if answer else None
 
-    for index, option in enumerate(options, 1):
+    shown_options = list(options)
+    if question.get("allow_other"):
+        shown_options.append({"label": "Outro…", "description": "resposta livre", "_other": True})
+    for index, option in enumerate(shown_options, 1):
         detail = f" — {option['description']}" if option["description"] else ""
         sys.stdout.write(f"  {YELLOW}{index}.{RESET} {option['label']}{DIM}{detail}{RESET}\n")
     hint = "números separados por vírgula" if question["multiple"] else "número"
@@ -158,9 +168,21 @@ def _read_question_answer(question):
             indexes = [int(part) for part in parts]
         except ValueError:
             indexes = []
-        if indexes and len(set(indexes)) == len(indexes) and all(1 <= item <= len(options) for item in indexes):
-            return ", ".join(options[item - 1]["label"] for item in indexes)
-        sys.stdout.write(f"{DIM}Escolha entre 1 e {len(options)}.{RESET}\n")
+        if indexes and len(set(indexes)) == len(indexes) and all(1 <= item <= len(shown_options) for item in indexes):
+            selected = []
+            for item in indexes:
+                option = shown_options[item - 1]
+                if option.get("_other"):
+                    sys.stdout.write(f"{DIM}Outro: {RESET}")
+                    sys.stdout.flush()
+                    custom = sys.stdin.readline().strip()
+                    if not custom:
+                        return None
+                    selected.append(custom)
+                else:
+                    selected.append(option["label"])
+            return selected
+        sys.stdout.write(f"{DIM}Escolha entre 1 e {len(shown_options)}.{RESET}\n")
 
 
 def ask_user_questions(tool_name, questions):
@@ -177,10 +199,7 @@ def ask_user_questions(tool_name, questions):
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 return None
-            answers[question["id"]] = (
-                [part.strip() for part in answer.split(",")]
-                if question["multiple"] else [answer]
-            )
+            answers[question["id"]] = answer
     sys.stdout.write("\n")
     sys.stdout.flush()
     return answers

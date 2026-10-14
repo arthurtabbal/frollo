@@ -79,6 +79,8 @@ class TestStructuredQuestions:
                 {"label": "Completa", "description": "faz tudo agora"},
             ],
             "multiple": False,
+            "secret": False,
+            "allow_other": False,
         }]
 
     def test_picker_retorna_rotulos_de_selecao_multipla(self, monkeypatch):
@@ -112,3 +114,31 @@ class TestStructuredQuestions:
         }))
 
         assert answers == {"detail": ["sim, mas depois"]}
+
+    def test_picker_oferece_outro_com_resposta_livre(self, monkeypatch):
+        import io
+        from lib.runner.permissions import ask_user_questions
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("2\nMinha opção\n"))
+        questions = normalize_user_questions({"questions": [{
+            "id": "choice",
+            "question": "Qual?",
+            "options": ["Padrão"],
+            "isOther": True,
+        }]})
+
+        assert ask_user_questions("request_user_input", questions) == {
+            "choice": ["Minha opção"],
+        }
+
+    def test_texto_secreto_nao_usa_readline(self, monkeypatch):
+        from lib.runner.permissions import ask_user_questions
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions.getpass.getpass", lambda prompt: "segredo")
+        questions = normalize_user_questions({"questions": [{
+            "id": "token", "question": "Token?", "isSecret": True,
+        }]})
+
+        assert ask_user_questions("request_user_input", questions) == {"token": ["segredo"]}

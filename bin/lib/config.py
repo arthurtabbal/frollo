@@ -13,6 +13,7 @@ DEFAULTS: dict = {
     "stats_pane": True,
     "thinking_autoresize": True,
     "persistent": False,
+    "background_continuation": "notify",
 }
 
 _cache: dict | None = None

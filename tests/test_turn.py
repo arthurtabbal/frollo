@@ -401,6 +401,17 @@ class TestBackgroundJobs:
             "session_id": "sess-123",
         }
 
+    def test_normaliza_notificacao_de_job_cancelado(self):
+        event = {
+            "type": "user",
+            "message": {"content": (
+                "<task-notification><task-id>bg123</task-id>"
+                "<status>killed</status></task-notification>"
+            )},
+        }
+
+        assert _background_job_notification(event)["status"] == "cancelled"
+
     def test_notificacao_atualiza_job_e_emite_conclusao(self, fake_client):
         turn = _turn(fake_client)
         fake_client._background_jobs = {

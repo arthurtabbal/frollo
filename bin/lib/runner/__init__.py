@@ -136,6 +136,9 @@ def _close_proc_stdin(proc):
 
 
 def _has_running_background_jobs(client):
+    supervisor = vars(client).get("supervisor")
+    if supervisor is not None:
+        return supervisor.has_running_jobs()
     jobs = getattr(client, "_background_jobs", None)
     return isinstance(jobs, dict) and any(
         job.get("status") == "running" for job in jobs.values()

@@ -117,7 +117,7 @@ def log_background_job(job):
 
 def log_background_job_status(job):
     status = job.get("status") or "unknown"
-    icon = "✓" if status == "completed" else "!"
+    icon = "✓" if status == "completed" else ("×" if status == "cancelled" else "!")
     _entry(TOOLS_TODO, icon, f"job {job.get('id') or '?'} · {status}")
     summary = job.get("summary")
     if summary:

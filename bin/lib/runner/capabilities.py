@@ -23,6 +23,9 @@ BACKENDS = {
             "tool_lifecycle": True,
             "approval_events": True,
             "image_input": True,
+            "background_jobs": True,
+            "background_continuation_control": False,
+            "structured_questions": True,
         },
     },
     "codex": {
@@ -42,6 +45,9 @@ BACKENDS = {
             "tool_lifecycle": True,
             "approval_events": True,
             "image_input": True,
+            "background_jobs": False,
+            "background_continuation_control": True,
+            "structured_questions": True,
         },
     },
 }

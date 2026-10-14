@@ -97,6 +97,7 @@ from lib.runner.codex import (
 from lib.runner.models import (
     discover_claude_efforts, discover_claude_models, pick_effort, pick_model,
 )
+from lib.runner.supervisor import POLICIES, SessionSupervisor
 from lib import config as _config
 from lib import errors
 from lib.configure import run_configure
@@ -197,7 +198,13 @@ class ClaudeClient:
         self._usage_thread = None
         self._codex_usage_thread = None
         self._usage_errors_seen = set()
-        self._background_jobs = {}
+        cfg = _config.load()
+        self.supervisor = SessionSupervisor(
+            self, policy=cfg.get("background_continuation", "notify"),
+        )
+        # Compatibilidade temporária para consumidores anteriores ao supervisor.
+        self._background_jobs = self.supervisor.jobs
+        self._orphaned_jobs_reported = False
 
         RUNDIR.mkdir(exist_ok=True)
         THINKING_LOG.write_text("")
@@ -804,6 +811,39 @@ class ClaudeClient:
             self._clear_interrupted_context()
             return result
 
+    def _show_recovered_jobs(self):
+        if self._orphaned_jobs_reported:
+            return
+        self._orphaned_jobs_reported = True
+        for job in self.supervisor.orphaned_jobs():
+            sys.stdout.write(
+                f"{YELLOW}! job {job.get('id')} ficou órfão após o restart{RESET}"
+                f"{DIM} — {job.get('summary')}{RESET}\n"
+            )
+        if self.supervisor.orphaned_jobs():
+            sys.stdout.flush()
+
+    def _handle_pending_continuation(self):
+        pending = self.supervisor.next_continuation()
+        if pending is None:
+            return False
+        job = pending["job"]
+        policy = pending["policy"]
+        if policy == "notify":
+            sys.stdout.write(f"{DIM}job {job.get('id')} concluído; continuação aguardando você{RESET}\n")
+            sys.stdout.flush()
+            return False
+        if policy == "auto":
+            self._run_turn(pending["instruction"])
+            return True
+        sys.stdout.write(f"{YELLOW}job {job.get('id')} concluído. Continuar agora? [s/N]{RESET} ")
+        sys.stdout.flush()
+        answer = input().strip().lower()
+        if answer in ("s", "sim", "y", "yes"):
+            self._run_turn(pending["instruction"])
+            return True
+        return False
+
     def _compact(self, instructions=""):
         if not self._supports("manual_compaction"):
             sys.stdout.write(
@@ -880,6 +920,9 @@ class ClaudeClient:
         while True:
             try:
                 self._sync_mode()
+                self._show_recovered_jobs()
+                if self._handle_pending_continuation():
+                    continue
                 sys.stdout.write('\n')
                 sys.stdout.flush()
                 _snapshot_buf = [None]
@@ -974,6 +1017,29 @@ class ClaudeClient:
                         shown = choice
                     self._update_model_title()
                     sys.stdout.write(f"\n{DIM}agent → {RESET}{PURPLE}{shown}{RESET}{DIM} (próximo turno){RESET}\n")
+                    sys.stdout.flush()
+                    continue
+                if user_input.strip().startswith("/jobs"):
+                    parts = user_input.strip().split(maxsplit=1)
+                    if len(parts) == 2:
+                        choice = parts[1].strip().lower()
+                        if choice not in POLICIES:
+                            sys.stdout.write(
+                                f"{YELLOW}política inválida; use notify, prompt ou auto{RESET}\n"
+                            )
+                            sys.stdout.flush()
+                            continue
+                        self.supervisor.set_policy(choice)
+                        _config.save({**_config.load(), "background_continuation": choice})
+                    configured = self.supervisor.policy
+                    effective = self.supervisor.effective_policy
+                    suffix = (
+                        f"; efetiva: {effective} (wake-up controlado pelo backend)"
+                        if effective != configured else ""
+                    )
+                    sys.stdout.write(
+                        f"{DIM}jobs: {len(self.supervisor.jobs)} · política: {configured}{suffix}{RESET}\n"
+                    )
                     sys.stdout.flush()
                     continue
                 if user_input.strip() == "/new":
