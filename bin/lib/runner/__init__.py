@@ -1,13 +1,14 @@
 import json
 import os
+import queue
 import re
 import shutil
-import select
 import subprocess
 import sys
 import termios
 import threading
 import time
+import weakref
 from datetime import datetime, timedelta
 
 from ..theme import DIM, RESET, YELLOW
@@ -133,6 +134,36 @@ def _close_proc_stdin(proc):
             stdin.close()
     except (OSError, ValueError):
         pass
+
+
+_STDOUT_QUEUES = weakref.WeakKeyDictionary()
+
+
+def _stdout_lines(proc):
+    """Fila com as linhas do stdout de `proc`, alimentada por uma thread própria.
+
+    `select()` sobre `proc.stdout` bufferizado perde linhas: um `readline()` puxa
+    o bloco inteiro do pipe pro buffer do Python e devolve só uma, e o `select`
+    seguinte diz "vazio" com o resto (inclusive o `result`) preso no buffer. Com o
+    stdin aberto o processo não sai, nenhum EOF acorda o loop e o turno morria no
+    idle timeout. A fila não tem buffer escondido. Uma fila por processo — em modo
+    persistente ela sobrevive entre turnos junto com o processo. "" marca EOF."""
+    lines = _STDOUT_QUEUES.get(proc)
+    if lines is None:
+        lines = queue.Queue()
+
+        def _pump():
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    lines.put(line)
+            except (OSError, ValueError):
+                pass  # pipe fechado por _terminate_proc; o EOF abaixo encerra o turno
+            finally:
+                lines.put("")
+
+        _STDOUT_QUEUES[proc] = lines
+        threading.Thread(target=_pump, daemon=True).start()
+    return lines
 
 
 def _has_running_background_jobs(client):
@@ -301,9 +332,11 @@ def run_turn(client, message, images=None):
         _idle_hit = False
         _eof = False
         last_line_at = time.monotonic()
+        stdout_lines = _stdout_lines(proc)
         while True:
-            ready, _, _ = select.select([proc.stdout], [], [], 0.15)
-            if not ready:
+            try:
+                raw = stdout_lines.get(timeout=0.15)
+            except queue.Empty:
                 if (not _has_running_background_jobs(client)
                         and errors.idle_timed_out(last_line_at, time.monotonic(), _CLAUDE_IDLE_TIMEOUT)):
                     # Silêncio absoluto no stdout, processo ainda vivo — o mesmo
@@ -312,21 +345,15 @@ def run_turn(client, message, images=None):
                     _idle_hit = True
                     break
                 continue
-            _eof = False
-            while ready:
-                raw = proc.stdout.readline()
-                if not raw:
-                    _eof = True
-                    break
-                last_line_at = time.monotonic()
-                turn.handle_line(raw)
-                if turn.turn_done:
-                    # 'result' delimita o turno no protocolo — em modo persistente
-                    # (Fase 4) o processo continua vivo e não fecha stdout sozinho,
-                    # então esperar EOF aqui travaria o turno pra sempre.
-                    break
-                ready, _, _ = select.select([proc.stdout], [], [], 0)
-            if _eof or turn.turn_done:
+            if not raw:
+                _eof = True
+                break
+            last_line_at = time.monotonic()
+            turn.handle_line(raw)
+            if turn.turn_done:
+                # 'result' delimita o turno no protocolo — o processo continua vivo
+                # (stdin aberto pra jobs em background, ou modo persistente) e não
+                # fecha stdout sozinho, então esperar EOF aqui travaria o turno.
                 break
 
         pending_json = False

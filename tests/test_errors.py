@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -393,12 +394,14 @@ class _FakeRenderQueue:
 class TestClaudeIdleTimeoutIntegracao:
     """O buraco original: processo `claude` vivo mas mudo travava o turno pra
     sempre (nenhum evento, nenhum erro). run_turn agora usa o mesmo
-    errors.idle_timed_out do Codex no seu próprio loop `select`."""
+    errors.idle_timed_out do Codex no seu próprio loop de leitura."""
 
     def test_stdout_mudo_expira_e_reporta_fatal(self, sink):
         log, _ = sink
         proc = MagicMock()
+        mudo = threading.Event()
         proc.stdout = MagicMock()
+        proc.stdout.readline.side_effect = lambda: mudo.wait() and ""  # vivo e mudo até o fim do teste
         proc.stderr = MagicMock()
         proc.stderr.readline.return_value = ""  # EOF imediato — thread stderr não fica presa
         proc.poll.return_value = None
@@ -429,7 +432,6 @@ class TestClaudeIdleTimeoutIntegracao:
             with patch("lib.runner.subprocess.Popen", return_value=proc), \
                  patch("lib.runner.RUNDIR", rundir), \
                  patch("lib.runner.turn.RUNDIR", rundir), \
-                 patch("lib.runner.select.select", return_value=([], [], [])), \
                  patch("lib.runner.time.monotonic", side_effect=_clock), \
                  patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
                  patch("lib.runner.termios.tcsetattr"), \
@@ -439,6 +441,7 @@ class TestClaudeIdleTimeoutIntegracao:
                 runner_mod.run_turn(client, "oi")
         finally:
             devnull.close()
+            mudo.set()
 
         rec = _records(log)[0]
         assert rec["code"] == "idle_timeout"

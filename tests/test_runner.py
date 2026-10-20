@@ -109,8 +109,7 @@ class TestClaudeNaoEncontrado:
             with patch("lib.runner.subprocess.Popen", return_value=proc), \
                  patch("lib.runner.RUNDIR", rundir), \
                  patch("lib.runner.turn.RUNDIR", rundir), \
-                 patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
-                 patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+                     patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
                  patch("lib.runner.termios.tcsetattr"), \
                  patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
                  patch("lib.runner.RenderQueue", side_effect=lambda: _FakeRenderQueue([])), \
@@ -201,7 +200,6 @@ def _run_stream(fake_client, lines, config_override=None):
         with patch("lib.runner.subprocess.Popen", return_value=proc), \
              patch("lib.runner.RUNDIR", rundir), \
              patch("lib.runner.turn.RUNDIR", rundir), \
-             patch("lib.runner.select.select", new=lambda *a, **k: ([proc.stdout], [], [])), \
              patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
              patch("lib.runner.termios.tcsetattr"), \
              patch("lib.runner.config.load", return_value=cfg), \
@@ -214,6 +212,57 @@ def _run_stream(fake_client, lines, config_override=None):
     finally:
         devnull.close()
     return log_calls, anim_calls, resize_calls
+
+
+class TestStdoutBufferizado:
+    """Regressão: o CLI despeja o fim do turno (últimos deltas + `result`) num único
+    write e segue vivo com o stdin aberto. Com `select` + `readline` bufferizado, o
+    resto ficava preso no buffer do Python e o turno morria no idle timeout com o
+    texto cortado no meio."""
+
+    def test_result_no_mesmo_bloco_encerra_turno_sem_eof(self, fake_client):
+        r, w = os.pipe()
+        proc = MagicMock()
+        proc.stdout = os.fdopen(r, "r", encoding="utf-8")
+        proc.stderr = _FakeStdout([])
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        lines = [
+            _se({"type": "message_start", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 1}}}),
+            _se({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}),
+            _se({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Sou o Opus"}}),
+            _se({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " e mais um pouco."}}),
+            _se({"type": "content_block_stop", "index": 0}),
+            _se({"type": "message_stop"}),
+            json.dumps({"type": "result", "session_id": "s1"}),
+        ]
+        os.write(w, ("\n".join(lines) + "\n").encode())  # writer fica aberto: processo vivo
+
+        fake_client._total_input_tokens = 0
+        fake_client._total_output_tokens = 0
+        fake_client._total_elapsed = 0.0
+        fake_client._total_cost = 0.0
+        rundir = Path(tempfile.mkdtemp())
+        devnull = open(os.devnull, "r")
+        try:
+            with patch("lib.runner.subprocess.Popen", return_value=proc), \
+                 patch("lib.runner._CLAUDE_IDLE_TIMEOUT", 2), \
+                 patch("lib.runner.RUNDIR", rundir), \
+                 patch("lib.runner.turn.RUNDIR", rundir), \
+                 patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+                 patch("lib.runner.termios.tcsetattr"), \
+                 patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+                 patch("lib.runner.RenderQueue", side_effect=lambda: _FakeRenderQueue([])), \
+                 patch("lib.runner.errors.report") as report, \
+                 patch.object(sys, "stdin", devnull):
+                run_turn(fake_client, "que modelo é você?")
+        finally:
+            devnull.close()
+            os.close(w)
+
+        assert fake_client._last_turn_completed is True
+        report.assert_not_called()
+        assert "e mais um pouco." in fake_client._last_response_text
 
 
 # Streams sintéticos baseados no stream-json do Claude: um turno com thinking
@@ -320,10 +369,6 @@ def _make_proc(lines):
     return proc
 
 
-def _select_any(rlist, wlist, xlist, *a, **k):
-    return (rlist, [], [])
-
-
 class TestPersistentMode:
     """Modo `persistent: true` (Fase 4): reaproveita o processo entre turnos em vez
     de spawnar um novo a cada mensagem. `fake_client.proc` começa None e é mantido
@@ -335,7 +380,6 @@ class TestPersistentMode:
             patch("lib.runner.subprocess.Popen", popen_mock),
             patch("lib.runner.RUNDIR", rundir),
             patch("lib.runner.turn.RUNDIR", rundir),
-            patch("lib.runner.select.select", new=_select_any),
             patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]),
             patch("lib.runner.termios.tcsetattr"),
             patch("lib.runner.config.load", return_value=cfg),
