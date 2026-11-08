@@ -52,12 +52,18 @@ def _tool_result_text(content):
 
 def _background_job_from_result(event, block, tool_input):
     """Extract the job identity exposed by Claude's background Bash result."""
-    metadata = (
-        event.get("toolUseResult")
-        or event.get("tool_use_result")
-        or block.get("toolUseResult")
-        or block.get("tool_use_result")
-        or {}
+    metadata = next(
+        (
+            candidate
+            for candidate in (
+                event.get("toolUseResult"),
+                event.get("tool_use_result"),
+                block.get("toolUseResult"),
+                block.get("tool_use_result"),
+            )
+            if isinstance(candidate, dict) and candidate
+        ),
+        {},
     )
     job_id = metadata.get("backgroundTaskId") or metadata.get("background_task_id")
     text = _tool_result_text(block.get("content", ""))

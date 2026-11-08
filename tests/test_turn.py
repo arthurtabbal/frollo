@@ -319,6 +319,22 @@ class TestToolUse:
 
 
 class TestBackgroundJobs:
+    def test_ignora_tool_use_result_textual_de_bash_foreground(self):
+        event = {
+            "toolUseResult": (
+                "Error: Exit code 1\n"
+                "expected an object but got: number (1)"
+            ),
+        }
+
+        job = _background_job_from_result(
+            event,
+            {"content": "Error: Exit code 1"},
+            {"command": "comando que falhou"},
+        )
+
+        assert job is None
+
     def test_extrai_id_e_output_do_resultado_textual(self):
         block = {
             "content": (
