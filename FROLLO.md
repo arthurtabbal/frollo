@@ -180,6 +180,7 @@ Caminhos que estavam mudos e hoje reportam:
 | Handshake (`initialize`/`thread/start`) falho | Codex | `TypeError` genérico ou timeout mudo | `_codex_await` aborta o turno explicando o motivo |
 | `result` com `is_error`/`subtype` | Claude | turno acabava sem texto e sem explicação | erro com a mensagem do CLI |
 | Teto de turno de 120s | ambos | corte de duração — matava turno longo saudável | `errors.idle_timed_out`: 120s **sem nenhum evento**, com falha explícita |
+| `chat.py` sai antes do sink existir (flag inválida, import quebrado) | ambos | o pane de chat fazia `exec python3` e fechava junto, levando o stderr embora — layout sem chat e nenhuma pista (caso real: `frollo --codex`, antes de o atalho existir) | `bin/chat_pane.sh` roda o chat; saída ≠ 0 mostra o código e segura o pane até Enter |
 
 O teto virou ociosidade de propósito: um turno de 10 minutos que segue emitindo eventos é trabalho,
 não travamento. Só o silêncio absoluto é sintoma — e agora vale para os dois backends, não só o
@@ -255,7 +256,8 @@ Registro das adições mais recentes para orientar navegação. Quando chegar a 
 | `lib/config.py` | ~45 | Carrega/salva `~/.config/frollo/config.json`; detecta first-run; flag `persistent` (default `false`) |
 | `lib/configure.py` | ~95 | Wizard de configuração (typewriter, gárgulas, stats) |
 | `characters/*.json` | ~213 cada | Falas de Victor, Hugo e Gudule por categoria de evento |
-| `frollo.sh` | ~275 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana) |
+| `frollo.sh` | ~285 | Layout tmux + arte ASCII (céu, Rio Sena, Paris urbana); expande atalhos (`--codex`) antes de repassar args ao `chat.py` |
+| `chat_pane.sh` | ~18 | Wrapper do pane de chat: se o `chat.py` sai com código ≠ 0, segura o pane com o erro visível |
 | `observe.sh` | ~87 | Viewer do observer passivo (jq + tail) |
 | `layout.sh` | ~26 | Layout simples: claude + observer lado a lado |
 | `hooks/log.sh` | ~22 | Coração do sistema — `jq -c` + `flock` (lockfile dedicado) + rotação a 10MB |
@@ -326,7 +328,7 @@ Preços e tamanhos de janela de contexto por modelo em `runner/stats.py`.
 
 **Picker de sessões e histórico visual**: `--resume` sem argumento abre o picker interativo do projeto atual. Depois da escolha (ou com `--resume <id>`), o Frollo reimprime no chat as falas de usuário e assistente antes do próximo prompt, somente para exibição — o backend continua sendo a fonte do contexto e nada é reenviado. Claude lê seu JSONL local; Codex usa `thread/read(includeTurns=true)`.
 
-**Backend Codex**: `frollo --backend codex` troca o cliente ativo para `codex app-server`. O prompt mostra badge `codex`, o título do pane inclui o backend, modelo observado e effort; o pane de thinking mostra apenas títulos/tópicos resumidos do raciocínio, enquanto comandos/diffs/buscas web aparecem no pane de tools. A linha de cota não reaproveita o cache Claude: ela consulta `account/rateLimits/read` no startup e a cada 5min por default, também aceita os updates esparsos `account/rateLimits/updated`, e formata o reset numérico do app-server como hora/data curta. O título do stats pane começa como `stats · codex` e passa ao email retornado por `account/read` no polling do próprio backend. A barra de contexto é atualizada nos eventos `thread/tokenUsage/updated` e usa `inputTokens` como ocupação total da janela; `cachedInputTokens` aparece como detalhe do turno, mas não entra somado de novo na linha `ctx`. As capabilities atuais habilitam seleção nativa de modelo e effort, descobertos via `model/list`; agent/advisor segue desabilitado. `--resume` sem ID lista threads do projeto via `thread/list`; `--resume <id>` e `/refresh` usam `thread/resume`.
+**Backend Codex**: `frollo --backend codex` (atalho: `frollo --codex`) troca o cliente ativo para `codex app-server`. O prompt mostra badge `codex`, o título do pane inclui o backend, modelo observado e effort; o pane de thinking mostra apenas títulos/tópicos resumidos do raciocínio, enquanto comandos/diffs/buscas web aparecem no pane de tools. A linha de cota não reaproveita o cache Claude: ela consulta `account/rateLimits/read` no startup e a cada 5min por default, também aceita os updates esparsos `account/rateLimits/updated`, e formata o reset numérico do app-server como hora/data curta. O título do stats pane começa como `stats · codex` e passa ao email retornado por `account/read` no polling do próprio backend. A barra de contexto é atualizada nos eventos `thread/tokenUsage/updated` e usa `inputTokens` como ocupação total da janela; `cachedInputTokens` aparece como detalhe do turno, mas não entra somado de novo na linha `ctx`. As capabilities atuais habilitam seleção nativa de modelo e effort, descobertos via `model/list`; agent/advisor segue desabilitado. `--resume` sem ID lista threads do projeto via `thread/list`; `--resume <id>` e `/refresh` usam `thread/resume`.
 
 A linha `ctx` também é reconciliada no polling periódico da cota a partir do último evento
 `token_count` persistido no rollout local do Codex. Isso cobre mudanças fora do ciclo normal de um
