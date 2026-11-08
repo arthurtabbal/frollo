@@ -1,5 +1,6 @@
 """Descoberta e seleção de modelo/effort pelos backends nativos."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 import re
 import subprocess
 import sys
@@ -43,7 +44,31 @@ def discover_claude_models(cwd):
     if not match:
         raise RuntimeError(f"resposta de /model não reconhecida: {result}")
     models = [item.strip().strip("`.") for item in match.group(1).split(",")]
-    return [{"model": item, "display_name": item, "efforts": []} for item in models if item]
+    models = [item for item in models if item]
+
+    # O catálogo lista aliases, mas omite a versão para a qual cada um aponta.
+    # Resolver os aliases pelo próprio slash command mantém o picker alinhado à
+    # conta/versão do CLI sem codificar um mapa que envelhece no Frollo.
+    def resolve_display_name(model):
+        selected = _claude_local_command(f"model {model}", cwd)
+        quoted = re.search(r"`([^`]+)`", selected)
+        if quoted:
+            resolved = quoted.group(1).strip()
+        else:
+            resolved_match = re.match(
+                r"((?:Sonnet|Opus|Haiku|Fable)\s+\d+(?:\.\d+)*)\b", selected, re.I,
+            )
+            resolved = resolved_match.group(1) if resolved_match else model
+        if model.lower() in ("sonnet", "opus", "haiku", "fable"):
+            return resolved
+        return f"{model} · {resolved}"
+
+    with ThreadPoolExecutor(max_workers=min(4, len(models))) as pool:
+        display_names = list(pool.map(resolve_display_name, models))
+    return [
+        {"model": model, "display_name": display, "efforts": []}
+        for model, display in zip(models, display_names)
+    ]
 
 
 def discover_claude_efforts(cwd):

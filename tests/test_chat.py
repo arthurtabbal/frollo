@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 
 from chat import (
-    ClaudeClient, _argv_without_resume, _history_user_block, _normalize_model_choice,
+    ClaudeClient, _argv_without_resume, _history_user_block, _initial_model, _normalize_model_choice,
     _safe_history_text, _short_model, _usage_refresh_seconds,
 )
 from lib.runner.capabilities import backend_profile, supports
@@ -223,6 +223,32 @@ class TestModeloVersao:
         assert _normalize_model_choice("sonnet", "4.6") == "claude-sonnet-4-6"
         assert _normalize_model_choice("opus-4.8") == "claude-opus-4-8"
         assert _normalize_model_choice("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_claude_retoma_ultimo_modelo_salvo(self):
+        assert _initial_model(
+            "claude", None, None, {"last_claude_model": "claude-opus-5-5"},
+        ) == "claude-opus-5-5"
+
+    def test_flag_explicita_vence_modelo_salvo(self):
+        assert _initial_model(
+            "claude", "haiku", "5.5", {"last_claude_model": "claude-opus-5-5"},
+        ) == "claude-haiku-5-5"
+
+    def test_codex_continua_sem_modelo_implicito(self):
+        assert _initial_model("codex", None, None, {"last_claude_model": "opus"}) is None
+
+    def test_turno_concluido_salva_modelo_real_observado(self, client):
+        client.backend_profile = backend_profile("claude")
+        client.observed_model = "claude-opus-5-5-20261001"
+        with patch("chat.run_turn", return_value=False), \
+                patch("chat._config.load", return_value={"typewriter": True}), \
+                patch("chat._config.save") as save:
+            client._run_turn("oi")
+
+        save.assert_called_once_with({
+            "typewriter": True,
+            "last_claude_model": "claude-opus-5-5-20261001",
+        })
 
 
 class TestBackendCapabilities:

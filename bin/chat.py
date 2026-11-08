@@ -86,6 +86,14 @@ def _normalize_model_choice(name, version=None):
         return f"claude-{match.group(1)}-{match.group(2).replace('.', '-')}"
     return model
 
+
+def _initial_model(backend, explicit_model, explicit_version, cfg):
+    """Flags vencem; sem elas, Claude retoma o último modelo realmente usado."""
+    if backend == "codex":
+        return explicit_model or None
+    selected = explicit_model or cfg.get("last_claude_model") or DEFAULT_MODEL
+    return _normalize_model_choice(selected, explicit_version)
+
 from lib.session import load_session_messages, pick_session
 from lib.input import InputReader
 from lib.runner import run_turn, _terminate_proc
@@ -809,6 +817,17 @@ class ClaudeClient:
                 return result
             self._finish_interrupted_turn_capture()
             self._clear_interrupted_context()
+            observed_model = getattr(self, "observed_model", "")
+            if self._backend_profile()["label"] == "claude" and observed_model:
+                cfg = dict(_config.load())
+                cfg["last_claude_model"] = observed_model
+                try:
+                    _config.save(cfg)
+                except OSError as exc:
+                    errors.report_exception(
+                        "config/model", exc, severity="warning",
+                        code="model_preference_save_failed", tmux_srv=self.tmux_srv,
+                    )
             return result
 
     def _show_recovered_jobs(self):
@@ -1157,10 +1176,9 @@ if __name__ == "__main__":
                 p.error(f"--backend {args.backend} ainda não suporta seleção de agent")
         if not supports(profile, "model_selection"):
             model = None
-        elif args.backend == "codex" and not (args.model or args.model_alias):
-            model = None
         else:
-            model = _normalize_model_choice(args.model or args.model_alias or DEFAULT_MODEL, args.model_version)
+            explicit_model = args.model or args.model_alias
+            model = _initial_model(args.backend, explicit_model, args.model_version, _config.load())
         effort = args.effort if supports(profile, "effort_selection") else None
         agent = (args.agent or args.agent_alias) if supports(profile, "agent_selection") else None
 
@@ -1175,6 +1193,10 @@ if __name__ == "__main__":
         _first_run = _config.is_first_run()
         if args.configure or _first_run:
             run_configure(first_run=_first_run)
+
+        # O wizard pode ter criado/substituído a config nesta mesma execução.
+        if supports(profile, "model_selection") and not (args.model or args.model_alias):
+            model = _initial_model(args.backend, None, args.model_version, _config.load())
 
         ClaudeClient(resume_id=resume_id, model=model, backend=args.backend, effort=effort, agent=agent).chat()
     except SystemExit:
