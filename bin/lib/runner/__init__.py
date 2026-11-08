@@ -205,6 +205,11 @@ def _ensure_proc(client, persistent):
         "--verbose",
         "--include-partial-messages",
         "--thinking-display", "summarized",
+        # Pedidos de permissão chegam como control_request `can_use_tool` e são
+        # respondidos no stdin, dentro do mesmo turno. Sem isso o `--print` nega
+        # sozinho e o fallback por allowlist não cobre proteções `safetyCheck`
+        # (ex.: escrita em `.claude/`) — o agente ficava em loop de "aprovado".
+        "--permission-prompt-tool", "stdio",
     ]
     if client.mode.value == "auto":
         cmd.append("--dangerously-skip-permissions")
@@ -348,8 +353,11 @@ def run_turn(client, message, images=None):
             if not raw:
                 _eof = True
                 break
-            last_line_at = time.monotonic()
             turn.handle_line(raw)
+            # Marcado depois do handle_line: um pedido de permissão/pergunta
+            # bloqueia ali esperando o usuário, e esse tempo não é silêncio do
+            # claude — não pode contar pro teto de ociosidade.
+            last_line_at = time.monotonic()
             if turn.turn_done:
                 # 'result' delimita o turno no protocolo — o processo continua vivo
                 # (stdin aberto pra jobs em background, ou modo persistente) e não

@@ -27,10 +27,12 @@ from .. import errors
 from .assistant_text import AssistantTextRenderer
 from .panes import THINKING_LOG, _resize_thinking
 from .permissions import (
+    _answer_question_request,
     _handle_permission,
     _handle_permission_ask,
     _handle_control_request,
     _handle_user_question,
+    _send_control_response,
     normalize_user_questions,
     _write_stdin,
 )
@@ -402,11 +404,7 @@ class Turn:
         elif etype == "user":
             self._handle_user(event)
         elif etype == "control_request":
-            self.render.suspend()
-            try:
-                _handle_control_request(event, self.proc, self.client.cwd)
-            finally:
-                self.render.resume()
+            self._handle_control_request(event)
         elif etype == "permission_request":
             self.render.suspend()
             try:
@@ -432,6 +430,48 @@ class Turn:
                 severity="warning", code="unknown_event_type", raw=event,
                 chat=False, tools=False,
             )
+
+    def _handle_control_request(self, event):
+        request_id = event.get("request_id", "")
+        request = event.get("request") or {}
+        subtype = request.get("subtype")
+        if subtype != "can_use_tool":
+            # O CLI bloqueia esperando resposta: responder erro destrava o turno.
+            _send_control_response(self.proc, request_id, error=f"Frollo não trata control_request {subtype!r}")
+            errors.report(
+                "claude/protocolo", f"control_request sem handler: {subtype}",
+                severity="error", code="unhandled_request", raw=event,
+                tmux_srv=getattr(self.client, "tmux_srv", None), render=self.render,
+            )
+            return
+        tool = request.get("tool_name")
+        if tool != "AskUserQuestion":
+            self.render.suspend()
+            try:
+                _handle_control_request(event, self.proc, self.client.cwd)
+            finally:
+                self.render.resume()
+            return
+        tool_id = request.get("tool_use_id") or request_id
+        questions = normalize_user_questions(request.get("input") or {})
+        self._emit("question.requested", {
+            "status": "in_progress", "questions": questions, "tool": tool,
+        }, item_id=tool_id, raw=event)
+        self.render.suspend()
+        try:
+            answers, response = _answer_question_request(request, questions)
+            _send_control_response(self.proc, request_id, response)
+        finally:
+            self.render.resume()
+        if answers is None:
+            self._emit("question.cancelled", {
+                "status": "cancelled", "questions": questions, "tool": tool,
+            }, item_id=tool_id, raw=event)
+        else:
+            self._emit("question.answered", {
+                "status": "completed", "questions": questions,
+                "answer": answers, "tool": tool,
+            }, item_id=tool_id, raw=event)
 
     def _emit_compaction_terminal(self, kind, payload, event):
         if self._compaction_terminal_event_emitted:

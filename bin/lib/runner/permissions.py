@@ -223,39 +223,77 @@ def _handle_user_question(tool_name, inp=None, result_text=""):
     )
 
 
+def _send_control_response(proc, request_id, response=None, *, error=None):
+    """Responde um control_request do CLI. Sem resposta o CLI fica esperando
+    pra sempre — todo request recebido precisa passar por aqui, nem que seja
+    com `error`."""
+    if error is not None:
+        payload = {"subtype": "error", "request_id": request_id, "error": error}
+    else:
+        payload = {"subtype": "success", "request_id": request_id, "response": response}
+    return _write_stdin(proc, json.dumps({"type": "control_response", "response": payload}) + "\n")
+
+
+def _answer_question_request(request, questions):
+    """`AskUserQuestion` chegando por can_use_tool: coleta a resposta e devolve
+    a tool permitida com `answers` no input — o CLI executa a tool no mesmo
+    turno, sem o retry contextual do fallback. Devolve (answers, response);
+    answers é None quando o usuário cancela."""
+    answers = ask_user_questions(request.get("tool_name"), questions)
+    if answers is None:
+        return None, {"behavior": "deny", "message": "O usuário cancelou a pergunta."}
+    updated = dict(request.get("input") or {})
+    updated["answers"] = {q["question"]: ", ".join(answers[q["id"]]) for q in questions}
+    return answers, {"behavior": "allow", "updatedInput": updated}
+
+
 def _handle_control_request(event, proc, cwd):
-    """Protocolo control_request/control_response (--permission-prompt-tool stdio).
-    Dispara ANTES da tool executar — respondendo allow o turno continua normal."""
+    """`can_use_tool` do protocolo de controle (`--permission-prompt-tool stdio`).
+
+    Dispara ANTES da tool executar e o CLI espera a resposta no stdin — por isso
+    o stdin do turno fica aberto até o `result`. Cobre também as proteções
+    `safetyCheck` (ex.: escrita em `.claude/`), que um `"Write"` no allowlist não
+    libera: só uma aprovação explícita ou a regra sugerida pelo próprio CLI."""
     request_id = event.get("request_id", "")
-    tool = event.get("tool_name", event.get("tool", "?"))
-    inp  = event.get("input", {})
+    request = event.get("request") or {}
+    tool = request.get("tool_name") or request.get("display_name") or "?"
+    inp = request.get("input") or {}
 
     _show_perm_banner(tool, inp)
+    reason = request.get("decision_reason")
+    if isinstance(reason, str) and reason.strip():
+        sys.stdout.write(f"{DIM}{reason.strip()}{RESET}\n")
     sys.stdout.write(f"{DIM}[y] permitir  [n] negar  [a] permitir sempre{RESET}  ")
     sys.stdout.flush()
 
     with _raw_stdin():
         ch = os.read(sys.stdin.fileno(), 1).decode('utf-8', errors='replace').lower()
 
-    if ch == 'a':
-        sys.stdout.write(f"a  {DIM}(permitir sempre){RESET}\n\n")
-        sys.stdout.flush()
-        _add_to_allowlist(tool, cwd)
-        behavior = "allow"
-    elif ch == 'y':
-        sys.stdout.write(f"y  {DIM}(permitido){RESET}\n\n")
-        sys.stdout.flush()
-        behavior = "allow"
+    if ch in ('a', 'y'):
+        response = {"behavior": "allow", "updatedInput": inp}
+        if ch == 'a':
+            sys.stdout.write(f"a  {DIM}(permitir sempre){RESET}\n\n")
+            # A regra sugerida pelo CLI é a que de fato cobre o pedido (ex.:
+            # `Edit(/.claude/skills/x/**)`); o nome cru da tool fica só de reserva.
+            suggestions = [
+                dict(s, destination="localSettings")
+                for s in request.get("permission_suggestions") or []
+                if isinstance(s, dict)
+            ]
+            if suggestions:
+                response["updatedPermissions"] = suggestions
+            else:
+                _add_to_allowlist(tool, cwd)
+        else:
+            sys.stdout.write(f"y  {DIM}(permitido){RESET}\n\n")
     else:
         sys.stdout.write(f"n  {DIM}(negado){RESET}\n\n")
-        sys.stdout.flush()
-        behavior = "deny"
+        response = {"behavior": "deny", "message": "O usuário negou a permissão no Frollo."}
+    sys.stdout.flush()
 
-    resp = json.dumps({"type": "control_response", "request_id": request_id,
-                       "response": {"behavior": behavior}})
-    if not _write_stdin(proc, resp + "\n"):
+    if not _send_control_response(proc, request_id, response):
         return False
-    return behavior == "allow"
+    return response["behavior"] == "allow"
 
 
 def _handle_permission_ask(tool_name, cwd):

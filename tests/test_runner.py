@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -71,6 +73,16 @@ class TestClaudeNaoEncontrado:
         assert cmd[cmd.index("--effort") + 1] == "max"
         assert cmd[cmd.index("--agent") + 1] == "advisor"
 
+    def test_spawn_pede_permissoes_pelo_protocolo_de_controle(self, fake_client):
+        # Sem a flag o `--print` nega sozinho, e proteções `safetyCheck` (escrita
+        # em `.claude/`) não são liberadas pelo allowlist do fallback.
+        for mode in ("normal", "auto"):
+            fake_client.mode.value = mode
+            with patch("lib.runner.subprocess.Popen", return_value=MagicMock()) as popen:
+                _ensure_proc(fake_client, persistent=False)
+            cmd = popen.call_args.args[0]
+            assert cmd[cmd.index("--permission-prompt-tool") + 1] == "stdio"
+
     def test_spawn_failed_registra_diagnostico_util(self, fake_client):
         with patch("lib.runner.subprocess.Popen", side_effect=FileNotFoundError), \
              patch("lib.runner.errors.report") as report:
@@ -122,6 +134,53 @@ class TestClaudeNaoEncontrado:
         assert fake_client._last_turn_completed is False
         assert report.call_args.args[0] == "claude/protocolo"
         assert report.call_args.kwargs["code"] == "missing_result"
+
+
+    def test_espera_pela_permissao_nao_conta_como_ociosidade(self, fake_client):
+        r, w = os.pipe()
+        proc = MagicMock()
+        proc.stdout = os.fdopen(r, "r", encoding="utf-8")
+        proc.stderr = _FakeStdout([])
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        os.write(w, (json.dumps({
+            "type": "control_request", "request_id": "r1",
+            "request": {"subtype": "can_use_tool", "tool_name": "Write", "input": {}},
+        }) + "\n").encode())
+
+        def _usuario_demora(event, proc_, cwd):
+            # o usuário leva mais que o teto pra decidir; o claude responde logo depois
+            time.sleep(1.2)
+            threading.Timer(0.3, lambda: os.write(
+                w, (json.dumps({"type": "result", "session_id": "s1"}) + "\n").encode()
+            )).start()
+            return True
+
+        fake_client._total_input_tokens = 0
+        fake_client._total_output_tokens = 0
+        fake_client._total_elapsed = 0.0
+        fake_client._total_cost = 0.0
+        rundir = Path(tempfile.mkdtemp())
+        devnull = open(os.devnull, "r")
+        try:
+            with patch("lib.runner.subprocess.Popen", return_value=proc), \
+                 patch("lib.runner._CLAUDE_IDLE_TIMEOUT", 1), \
+                 patch("lib.runner.RUNDIR", rundir), \
+                 patch("lib.runner.turn.RUNDIR", rundir), \
+                 patch("lib.runner.turn._handle_control_request", side_effect=_usuario_demora), \
+                 patch("lib.runner.termios.tcgetattr", return_value=[0, 0, 0, 0, 0, 0, [0] * 32]), \
+                 patch("lib.runner.termios.tcsetattr"), \
+                 patch("lib.runner.config.load", return_value={"typewriter": False, "gargoyles": False}), \
+                 patch("lib.runner.RenderQueue", side_effect=lambda: _FakeRenderQueue([])), \
+                 patch("lib.runner.errors.report") as report, \
+                 patch.object(sys, "stdin", devnull):
+                run_turn(fake_client, "escreve a skill")
+        finally:
+            devnull.close()
+            os.close(w)
+
+        assert fake_client._last_turn_completed is True
+        assert not any(call.kwargs.get("code") == "idle_timeout" for call in report.call_args_list)
 
 
 class _FakeStdout:

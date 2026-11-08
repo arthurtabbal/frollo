@@ -489,6 +489,45 @@ class TestToolResultPermissao:
         assert fake_client._retry_context is None
 
 
+class TestControlRequest:
+    def test_can_use_tool_vai_pro_prompt_de_permissao(self, fake_client):
+        turn = _turn(fake_client)
+        event = {"type": "control_request", "request_id": "r1",
+                 "request": {"subtype": "can_use_tool", "tool_name": "Write", "input": {}}}
+        with patch("lib.runner.turn._handle_control_request", return_value=True) as handler:
+            turn.handle_event(event)
+        handler.assert_called_once_with(event, turn.proc, "/tmp")
+        turn.render.suspend.assert_called_once()
+        turn.render.resume.assert_called_once()
+
+    def test_pergunta_e_respondida_no_mesmo_turno_sem_retry(self, fake_client):
+        turn = _turn(fake_client)
+        response = {"behavior": "allow", "updatedInput": {"answers": {"Qual?": "A"}}}
+        with patch("lib.runner.turn._answer_question_request",
+                   return_value=({"q": ["A"]}, response)), \
+             patch("lib.runner.turn._send_control_response") as send:
+            turn.handle_event({"type": "control_request", "request_id": "r1", "request": {
+                "subtype": "can_use_tool", "tool_name": "AskUserQuestion",
+                "tool_use_id": "tu1", "input": {"question": "Qual?", "options": ["A", "B"]},
+            }})
+
+        send.assert_called_once_with(turn.proc, "r1", response)
+        assert turn.retry_requested is False
+        kinds = [e["kind"] for e in turn.frollo_events if e["kind"].startswith("question.")]
+        assert kinds == ["question.requested", "question.answered"]
+
+    def test_subtype_desconhecido_responde_erro_e_reporta(self, fake_client):
+        # Sem resposta o CLI bloqueia esperando — o turno virava spinner infinito.
+        turn = _turn(fake_client)
+        with patch("lib.runner.turn._send_control_response") as send, \
+             patch("lib.runner.turn.errors.report") as report:
+            turn.handle_event({"type": "control_request", "request_id": "r9",
+                               "request": {"subtype": "hook_callback"}})
+        assert send.call_args.args[:2] == (turn.proc, "r9")
+        assert "error" in send.call_args.kwargs
+        assert report.call_args.kwargs["code"] == "unhandled_request"
+
+
 class TestToolResultPerguntaUsuario:
     def test_tool_de_pergunta_falha_e_vira_retry_com_resposta(self, fake_client):
         turn = _turn(fake_client)
