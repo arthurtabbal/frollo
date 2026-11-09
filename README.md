@@ -94,6 +94,7 @@ frollo /path/to/project       # full layout in a specific project
 frollo --model sonnet --model-version 4.6 --effort high
 frollo --advisor              # Claude Code agent shortcut
 frollo --backend codex        # experimental Codex App Server backend
+frollo --codex                # shortcut for --backend codex
 frollo --resume --backend codex # pick and resume a Codex thread for this project
 ./bin/observe.sh              # passive observer only: the raw event stream,
                               # from every Claude Code session on the machine

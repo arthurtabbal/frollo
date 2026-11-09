@@ -25,21 +25,30 @@ _BACKEND="claude"
 _CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
 _next_is_backend=false
 _is_resume=false
+_CHAT_ARGS=()   # argumentos repassados ao chat.py, com atalhos já expandidos
 for _arg in "$@"; do
     if [[ "$_next_is_backend" == "true" ]]; then
         _BACKEND="$_arg"
         _next_is_backend=false
+        _CHAT_ARGS+=("$_arg")
         continue
     fi
     case "$_arg" in
         --backend) _next_is_backend=true ;;
         --backend=*) _BACKEND="${_arg#--backend=}" ;;
+        --codex)
+            # Atalho: o chat.py só conhece --backend, então a flag é expandida aqui.
+            _BACKEND="codex"
+            _CHAT_ARGS+=(--backend codex)
+            continue
+            ;;
         --resume|--resume=*|-r) _is_resume=true ;;
         --backed|--backed=*)
             echo "erro: opção desconhecida: $_arg (você quis dizer --backend?)"
             exit 2
             ;;
     esac
+    _CHAT_ARGS+=("$_arg")
 done
 
 if [[ "$_next_is_backend" == "true" ]]; then
@@ -120,7 +129,7 @@ P_LEFT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Coluna direita: chat (40% da largura, altura total)
 tmux -L "$SRV" split-window -h -l "40%" -t "$P_LEFT" \
-    "while [ ! -f '$CHAT_START' ]; do sleep 0.05; done; cd '$PROJ_DIR' && exec env FROLLO_CONFIG='$_FROLLO_CONFIG' CLAUDE_BIN='$_CLAUDE_BIN' CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' python3 '$CLIENT'$( [[ $# -gt 0 ]] && printf ' %q' "$@")"
+    "while [ ! -f '$CHAT_START' ]; do sleep 0.05; done; cd '$PROJ_DIR' && exec env FROLLO_CONFIG='$_FROLLO_CONFIG' CLAUDE_BIN='$_CLAUDE_BIN' CLAUDE_TMUX_SRV='$SRV' CLAUDE_NVIM_PANE='$P_LEFT' CLAUDE_EDITOR_BIN='$_editor_bin' CLAUDE_RUNDIR='$RUNDIR' bash '$REPO_DIR/bin/chat_pane.sh' python3 '$CLIENT'$( [[ ${#_CHAT_ARGS[@]} -gt 0 ]] && printf ' %q' "${_CHAT_ARGS[@]}")"
 P_CHAT=$(tmux -L "$SRV" display-message -t "claude:main" -p "#{pane_id}")
 
 # Tools: base da coluna direita (_BOTTOM linhas, calculado acima)
