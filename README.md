@@ -1,6 +1,7 @@
 # Frollo
 
 [![CI](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml/badge.svg)](https://github.com/arthurtabbal/frollo/actions/workflows/ci.yml)
+[![Featured in the XERJ Corpus Hub](https://img.shields.io/badge/XERJ_Corpus_Hub-featured-8a2be2)](https://hub.xerj.org/contributors/arthurtabbal)
 
 > **A human-first observability layer for coding agents.**
 
@@ -47,6 +48,7 @@ Think of it as somewhere between:
 * **Passive observer** — a system-wide hook captures every Claude Code session on the machine into an append-only JSONL event log; `observe.sh` tails and renders the stream.
 * **Typewriter pacing** — output is paced so you can follow the agent in real time instead of staring at a spinner and then receiving a wall of text. Any keypress skips ahead.
 * **tmux-native** — the interface is just tmux panes: editor, chat, thinking, tools, stats.
+* **In-turn permissions and questions** — permission prompts and `AskUserQuestion` arrive over Claude Code's control protocol (`--permission-prompt-tool stdio`) and are answered inside the same turn, before the tool runs. This implementation was [selected for the XERJ Corpus Hub](https://hub.xerj.org/contributors/arthurtabbal), an open index of reference code for coding agents.
 * **Loud failures** — errors never die quietly: they land in the chat, expand the tools pane with the details, and append to `~/.config/frollo/errors.jsonl`.
 * **Session picker and visual resume** — resume any previous session interactively and rehydrate its user/assistant conversation in the chat before the next prompt.
 * **Experimental Codex backend** — run the same terminal interface against `codex app-server` with `--backend codex`.
