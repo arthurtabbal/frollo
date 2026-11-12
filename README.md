@@ -131,6 +131,8 @@ The full layout opens a tmux session:
 | `Ctrl+C` | Cancel the running turn (or clear the line if idle) |
 | `Ctrl+D` | Exit |
 
+For questions with choices, use ↑/↓ to move and Enter to confirm. For multiple choices, Space marks an option. Esc cancels the question. Free-text questions still accept a typed answer.
+
 ---
 
 ## Design Principles

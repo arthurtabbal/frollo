@@ -2,6 +2,8 @@ import contextlib
 import getpass
 import json
 import os
+import select
+import shutil
 import sys
 import termios
 import tty
@@ -153,36 +155,86 @@ def _read_question_answer(question):
     for index, option in enumerate(shown_options, 1):
         detail = f" — {option['description']}" if option["description"] else ""
         sys.stdout.write(f"  {YELLOW}{index}.{RESET} {option['label']}{DIM}{detail}{RESET}\n")
-    hint = "números separados por vírgula" if question["multiple"] else "número"
-    while True:
-        sys.stdout.write(f"{DIM}> {hint} (vazio cancela): {RESET}")
+    sys.stdout.flush()
+    indexes = _pick_options(shown_options, question["multiple"])
+    if indexes is None:
+        return None
+    selected = []
+    for index in indexes:
+        option = shown_options[index]
+        if option.get("_other"):
+            sys.stdout.write(f"{DIM}Outro: {RESET}")
+            sys.stdout.flush()
+            custom = sys.stdin.readline().strip()
+            if not custom:
+                return None
+            selected.append(custom)
+        else:
+            selected.append(option["label"])
+    sys.stdout.write(f"{YELLOW}✓ {', '.join(selected)}{RESET}\n")
+    return selected
+
+
+def _read_picker_key():
+    """Lê uma tecla raw; distingue Esc solto das sequências das setas."""
+    fd = sys.stdin.fileno()
+    key = os.read(fd, 1)
+    if key != b"\x1b":
+        return key
+    if not select.select([fd], [], [], 0.05)[0]:
+        return key
+    second = os.read(fd, 1)
+    if second not in (b"[", b"O"):
+        return key
+    if not select.select([fd], [], [], 0.05)[0]:
+        return key
+    return key + second + os.read(fd, 1)
+
+
+def _pick_options(options, multiple):
+    """Mostra a opção ativa numa linha fixa, sem redesenhar texto com soft-wrap."""
+    current = 0
+    marked = set()
+    hint = "↑↓ mover  Espaço marcar  Enter confirmar  Esc cancelar" if multiple else "↑↓ mover  Enter confirmar  Esc cancelar"
+
+    def redraw():
+        option = options[current]
+        marker = "[x]" if current in marked else "[ ]" if multiple else "▸"
+        label = f"{marker} {current + 1}/{len(options)} {option['label']}"
+        width = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns - 1)
+        if len(label) > width:
+            label = label[:max(0, width - 1)] + "…"
+        sys.stdout.write(f"\r\033[2K{YELLOW}{label}{RESET}")
         sys.stdout.flush()
-        raw = sys.stdin.readline().strip()
-        if not raw:
-            return None
-        parts = [part.strip() for part in raw.split(",")]
-        if not question["multiple"] and len(parts) != 1:
-            sys.stdout.write(f"{DIM}Escolha apenas uma opção.{RESET}\n")
-            continue
-        try:
-            indexes = [int(part) for part in parts]
-        except ValueError:
-            indexes = []
-        if indexes and len(set(indexes)) == len(indexes) and all(1 <= item <= len(shown_options) for item in indexes):
-            selected = []
-            for item in indexes:
-                option = shown_options[item - 1]
-                if option.get("_other"):
-                    sys.stdout.write(f"{DIM}Outro: {RESET}")
-                    sys.stdout.flush()
-                    custom = sys.stdin.readline().strip()
-                    if not custom:
-                        return None
-                    selected.append(custom)
-                else:
-                    selected.append(option["label"])
-            return selected
-        sys.stdout.write(f"{DIM}Escolha entre 1 e {len(shown_options)}.{RESET}\n")
+
+    sys.stdout.write(f"{DIM}{hint}{RESET}\n")
+    redraw()
+    try:
+        with _raw_stdin():
+            while True:
+                key = _read_picker_key()
+                if key in (b"\x1b[A", b"\x1bOA"):
+                    current = (current - 1) % len(options)
+                elif key in (b"\x1b[B", b"\x1bOB"):
+                    current = (current + 1) % len(options)
+                elif key in (b"\r", b"\n"):
+                    if multiple:
+                        if not marked:
+                            marked.add(current)
+                        return sorted(marked)
+                    return [current]
+                elif key == b" " and multiple:
+                    if current in marked:
+                        marked.remove(current)
+                    else:
+                        marked.add(current)
+                elif key in (b"\x1b", b"\x03", b""):
+                    return None
+                redraw()
+    finally:
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+        sys.stdout.write("\n")
 
 
 def ask_user_questions(tool_name, questions):

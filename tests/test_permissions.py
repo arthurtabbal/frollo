@@ -128,7 +128,9 @@ class TestAnswerQuestionRequest:
         import io
 
         monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
-        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("2\n"))
+        monkeypatch.setattr("lib.runner.permissions._raw_stdin", _fake_raw_stdin)
+        keys = iter([b"\x1b[B", b"\r"])
+        monkeypatch.setattr("lib.runner.permissions._read_picker_key", lambda: next(keys))
         request = _can_use_tool("AskUserQuestion", {"questions": [{
             "question": "Qual cor?", "header": "Cor",
             "options": [{"label": "Vermelho"}, {"label": "Azul"}],
@@ -185,10 +187,10 @@ class TestStructuredQuestions:
         }]
 
     def test_picker_retorna_rotulos_de_selecao_multipla(self, monkeypatch):
-        import io
-
         monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
-        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("1,3\n"))
+        monkeypatch.setattr("lib.runner.permissions._raw_stdin", _fake_raw_stdin)
+        keys = iter([b" ", b"\x1b[B", b"\x1b[B", b" ", b"\r"])
+        monkeypatch.setattr("lib.runner.permissions._read_picker_key", lambda: next(keys))
         answer = _handle_user_question("AskUserQuestion", {"questions": [{
             "question": "Quais entram?",
             "options": ["A", "B", "C"],
@@ -221,7 +223,10 @@ class TestStructuredQuestions:
         from lib.runner.permissions import ask_user_questions
 
         monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
-        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("2\nMinha opção\n"))
+        monkeypatch.setattr("lib.runner.permissions._raw_stdin", _fake_raw_stdin)
+        keys = iter([b"\x1b[B", b"\r"])
+        monkeypatch.setattr("lib.runner.permissions._read_picker_key", lambda: next(keys))
+        monkeypatch.setattr("lib.runner.permissions.sys.stdin", io.StringIO("Minha opção\n"))
         questions = normalize_user_questions({"questions": [{
             "id": "choice",
             "question": "Qual?",
@@ -232,6 +237,15 @@ class TestStructuredQuestions:
         assert ask_user_questions("request_user_input", questions) == {
             "choice": ["Minha opção"],
         }
+
+    def test_picker_esc_cancela_opcoes(self, monkeypatch):
+        from lib.runner.permissions import ask_user_questions
+
+        monkeypatch.setattr("lib.runner.permissions._cooked_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions._raw_stdin", _fake_raw_stdin)
+        monkeypatch.setattr("lib.runner.permissions._read_picker_key", lambda: b"\x1b")
+        questions = normalize_user_questions({"question": "Qual?", "options": ["A", "B"]})
+        assert ask_user_questions("AskUserQuestion", questions) is None
 
     def test_texto_secreto_nao_usa_readline(self, monkeypatch):
         from lib.runner.permissions import ask_user_questions
